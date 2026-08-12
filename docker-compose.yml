@@ -1,0 +1,11 @@
+services:
+  rigpulse:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      RIGPULSE_DATA_DIR: /data
+      RIGPULSE_POLL_SECONDS: "10"
+    volumes:
+      - ./data:/data
