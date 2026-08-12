@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 
@@ -74,6 +74,9 @@ class MinerIn(BaseModel):
 
 class SettingsIn(BaseModel):
     share_emoji: str = "🎉"
+    share_emoji_sha256: str = ""
+    share_emoji_blake3: str = ""
+    share_emoji_default: str = ""
     animation_density: int = Field(default=7, ge=1, le=30)
     celebrate_rejected: bool = False
 
@@ -122,7 +125,7 @@ manager = WSManager()
 latest_telemetry: dict[int, Telemetry] = {}
 latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
-app = FastAPI(title="RigPulse", version="0.3.1")
+app = FastAPI(title="RigPulse", version="0.3.2")
 
 
 def db():
@@ -176,6 +179,9 @@ def init_db():
         """)
         defaults = {
             "share_emoji": "🎉",
+            "share_emoji_sha256": "",
+            "share_emoji_blake3": "",
+            "share_emoji_default": "",
             "animation_density": "7",
             "celebrate_rejected": "false",
             "theme": "midnight",
@@ -192,8 +198,12 @@ def init_db():
 def get_settings():
     with db() as c:
         rows = {r["key"]: r["value"] for r in c.execute("SELECT key,value FROM settings")}
+    legacy = rows.get("share_emoji", "🎉")
     return {
-        "share_emoji": rows.get("share_emoji", "🎉"),
+        "share_emoji": legacy,
+        "share_emoji_sha256": rows.get("share_emoji_sha256") or legacy,
+        "share_emoji_blake3": rows.get("share_emoji_blake3") or legacy,
+        "share_emoji_default": rows.get("share_emoji_default") or legacy,
         "animation_density": int(rows.get("animation_density", "7")),
         "celebrate_rejected": rows.get("celebrate_rejected", "false") == "true",
     }
@@ -1394,7 +1404,7 @@ async def collector():
                 old = previous.get(miner["id"])
                 if old and old.accepted is not None and t.accepted is not None and t.accepted > old.accepted:
                     delta = min(t.accepted - old.accepted, 25)
-                    await manager.broadcast({"type":"share","miner_id":miner["id"],"miner_name":miner["name"],"count":delta})
+                    await manager.broadcast({"type":"share","miner_id":miner["id"],"miner_name":miner["name"],"algorithm":miner["algorithm"],"count":delta})
                 if old and old.best_share and t.best_share and t.best_share != old.best_share:
                     await manager.broadcast({"type":"best_share","miner_id":miner["id"],"miner_name":miner["name"],"value":t.best_share})
                 previous[miner["id"]] = t
@@ -1418,6 +1428,16 @@ async def home():
     return INDEX_HTML
 
 
+@app.get("/assets/mining-room.webp")
+async def mining_room_background():
+    return FileResponse(Path(__file__).parent / "assets" / "mining-room.webp", media_type="image/webp")
+
+
+@app.get("/favicon.svg")
+async def favicon():
+    return Response(content=FAVICON_SVG, media_type="image/svg+xml")
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await manager.connect(ws)
@@ -1437,6 +1457,9 @@ def settings_get():
 def settings_put(body: SettingsIn):
     with db() as c:
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('share_emoji',?)", (body.share_emoji,))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('share_emoji_sha256',?)", (body.share_emoji_sha256 or body.share_emoji,))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('share_emoji_blake3',?)", (body.share_emoji_blake3 or body.share_emoji,))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('share_emoji_default',?)", (body.share_emoji_default or body.share_emoji,))
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('animation_density',?)", (str(body.animation_density),))
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('celebrate_rejected',?)", ("true" if body.celebrate_rejected else "false",))
     return get_settings()
@@ -2097,6 +2120,19 @@ def fleet_history(seconds: int = 86400, limit_per_miner: int = 300):
     return {"seconds": seconds, "miners": out}
 
 
+def _human_si(value: Any) -> str | None:
+    if value is None or isinstance(value, bool):
+        return None
+    match = re.search(r"([-+]?\d+(?:\.\d+)?)\s*([kKmMgGtTpPeE]?)", str(value).replace(",", ""))
+    if not match:
+        return None
+    n = float(match.group(1)) * {"": 1, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18}[match.group(2).upper()]
+    for suffix, scale in (("E", 1e18), ("P", 1e15), ("T", 1e12), ("G", 1e9), ("M", 1e6), ("K", 1e3)):
+        if abs(n) >= scale:
+            return f"{n / scale:.3g}{suffix}"
+    return f"{n:g}"
+
+
 def _pool_from_telemetry(m: dict[str, Any]) -> dict[str, Any]:
     t = m.get("telemetry") or {}
     raw = t.get("raw") or {}
@@ -2136,7 +2172,7 @@ def _pool_from_telemetry(m: dict[str, Any]) -> dict[str, Any]:
         "status": p.get("Status") or p.get("status") or p.get("state"),
         "accepted": p.get("Accepted") if p.get("Accepted") is not None else p.get("accepted"),
         "rejected": p.get("Rejected") if p.get("Rejected") is not None else p.get("rejected"),
-        "difficulty": p.get("poolDifficulty") or p.get("Stratum Difficulty") or p.get("Difficulty") or p.get("diff") or p.get("diff1"),
+        "difficulty": _human_si(p.get("poolDifficulty") or p.get("Stratum Difficulty") or p.get("Difficulty") or p.get("diff") or p.get("diff1")),
     }
 
 
@@ -2326,12 +2362,15 @@ def history(miner_id: int, seconds: int = 3600):
     return rows
 
 
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#06111e"/><path d="M32 8 53 20v24L32 56 11 44V20Z" fill="none" stroke="#48c8ff" stroke-width="4"/><path d="M13 33h10l4-12 7 23 5-16 4 5h9" fill="none" stroke="#6ee7ff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"""
+
 INDEX_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>RigPulse</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
 <style>
 :root{
   --bg:#050b14;--panel:#0b1523;--panel2:#101d2d;--line:#1b2d43;--text:#f5f8fb;
@@ -2354,10 +2393,13 @@ body.theme-aurora{--accent-rgb:65,255,183}
 body.theme-bitcoin{--accent-rgb:247,147,26}
 body.theme-matrix{--accent-rgb:50,255,112}
 body.theme-ocean{--accent-rgb:45,132,255}
+body.theme-mining-room{--accent-rgb:58,172,255}
 body.theme-aurora::before{background:radial-gradient(circle at 80% 5%,rgba(56,255,184,calc(.22 * var(--bg-intensity))),transparent 31%),radial-gradient(circle at 15% 75%,rgba(126,82,255,calc(.17 * var(--bg-intensity))),transparent 37%),linear-gradient(135deg,#030b12,#07151b 50%,#050917)}
 body.theme-bitcoin::before{background:radial-gradient(circle at 82% 4%,rgba(247,147,26,calc(.26 * var(--bg-intensity))),transparent 30%),radial-gradient(circle at 20% 80%,rgba(255,70,30,calc(.10 * var(--bg-intensity))),transparent 35%),linear-gradient(135deg,#090805,#120d07 48%,#05080e)}
 body.theme-matrix::before{background:radial-gradient(circle at 76% 7%,rgba(45,255,105,calc(.18 * var(--bg-intensity))),transparent 32%),linear-gradient(135deg,#020805,#06110a 50%,#020706)}
 body.theme-ocean::before{background:radial-gradient(circle at 84% 5%,rgba(37,130,255,calc(.28 * var(--bg-intensity))),transparent 30%),radial-gradient(circle at 10% 80%,rgba(0,210,255,calc(.10 * var(--bg-intensity))),transparent 36%),linear-gradient(135deg,#020714,#061325 50%,#030917)}
+body.theme-mining-room::before{background:linear-gradient(rgba(2,8,18,.58),rgba(2,8,18,.68)),url('/assets/mining-room.webp') center/cover fixed no-repeat;filter:brightness(calc(.38 + var(--bg-intensity) * .18))}
+body.theme-mining-room::after{opacity:.08}
 button,input,select{font:inherit}
 .app{display:grid;grid-template-columns:180px 1fr;min-height:100vh}
 .sidebar{border-right:1px solid rgba(90,130,180,.18);padding:22px 14px;position:sticky;top:0;height:100vh;background:rgba(5,13,24,.70);backdrop-filter:blur(var(--glass-blur))}
@@ -2375,6 +2417,7 @@ button,input,select{font:inherit}
 .toolbar{display:flex;gap:8px;margin:14px 0;align-items:center}.toolbar .spacer{flex:1}
 .grid{display:grid;grid-template-columns:repeat(3,minmax(250px,1fr));gap:12px}
 .miner{padding:16px;position:relative;overflow:hidden}.miner.offline{border-color:#6f232a}.miner.online{border-color:#1b6f46}.miner-head{display:flex;justify-content:space-between;gap:10px}.miner h3{margin:0;font-size:18px}.sub{color:#8295ac;font-size:12px;margin-top:3px}.status{font-size:12px}.hash{font-size:30px;font-weight:800;margin:18px 0 8px;color:#6fd2ff}.spark{height:42px;width:100%;margin:4px 0 10px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;border-top:1px solid #15263a;padding-top:12px}.stats b{display:block;font-size:13px}.stats span{color:#8091a5;font-size:10px}
+.miner.fleet-best{overflow:visible;border-color:transparent}.miner.fleet-best::before{content:"";position:absolute;inset:-3px;z-index:-1;border-radius:17px;background:conic-gradient(from var(--best-angle),#ff3b6b,#ffb629,#54ef78,#2ee7ff,#785bff,#ff3bce,#ff3b6b);animation:bestRing 4s linear infinite;filter:drop-shadow(0 0 9px rgba(70,190,255,.45))}.miner.fleet-best::after{content:"Fleet Best";position:absolute;right:12px;top:-10px;background:#07111d;border:1px solid #4dcfff;color:#9feaff;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:800}.miner.fleet-best>.miner-head{position:relative}.miner.fleet-best{background:linear-gradient(180deg,rgba(13,27,44,.98),rgba(6,15,27,.98))}@property --best-angle{syntax:'<angle>';initial-value:0deg;inherits:false}@keyframes bestRing{to{--best-angle:360deg}}@media(prefers-reduced-motion:reduce){.miner.fleet-best::before{animation:none}}
 .modal{display:none;position:fixed;inset:0;background:#000a;z-index:20;align-items:center;justify-content:center;padding:20px}.modal.show{display:flex}.dialog{width:min(540px,100%);padding:20px}.dialog h2{margin-top:0}.field{margin:12px 0}.field label{display:block;color:#91a4bb;font-size:12px;margin-bottom:5px}.field input,.field select{width:100%;background:#07111d;color:white;border:1px solid #24364a;border-radius:9px;padding:11px}
 .row{display:flex;gap:8px}.row>*{flex:1}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .celebrate{position:fixed;pointer-events:none;z-index:50;font-size:30px;animation:fall 2.2s ease-out forwards}
@@ -2403,8 +2446,8 @@ button,input,select{font:inherit}
 .block-meta{display:flex;gap:16px;color:#91a4bb;font-size:12px;flex-wrap:wrap}.block-meta b{color:#fff}
 .block-pulse{animation:blockPulse 1.8s ease}
 @keyframes blockPulse{0%{box-shadow:0 0 0 0 rgba(247,147,26,.65)}100%{box-shadow:0 0 0 30px rgba(247,147,26,0)}}
-.custom-preview{height:125px;border-radius:13px;border:1px solid rgba(var(--accent-rgb),.28);background:linear-gradient(135deg,rgba(var(--accent-rgb),.18),rgba(5,12,22,.45));padding:14px;display:flex;align-items:flex-end;overflow:hidden}
-.custom-preview-card{width:62%;height:72px;border-radius:12px;background:rgba(8,20,34,var(--card-opacity));border:1px solid rgba(var(--accent-rgb),.3);backdrop-filter:blur(var(--glass-blur));padding:10px}
+.custom-preview{min-height:142px;border-radius:13px;border:1px solid rgba(var(--accent-rgb),.28);background:linear-gradient(135deg,rgba(var(--accent-rgb),.18),rgba(5,12,22,.45));padding:16px;display:flex;align-items:center;overflow:hidden}
+.custom-preview-card{width:min(430px,72%);min-height:86px;border-radius:12px;background:rgba(8,20,34,var(--card-opacity));border:1px solid rgba(var(--accent-rgb),.3);backdrop-filter:blur(var(--glass-blur));padding:12px;display:flex;flex-direction:column;justify-content:center}.custom-preview-card .hash{font-size:22px;margin:7px 0 0;line-height:1.15}
 .range-row{display:grid;grid-template-columns:1fr 70px;gap:10px;align-items:center}
 .nav-sep{height:1px;background:#14243a;margin:8px 5px}
 body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;font-size:27px} body.compact .miner .spark{height:32px}
@@ -2499,7 +2542,8 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 
 <div class="modal" id="settingsModal"><div class="dialog card">
 <h2>Celebration Settings</h2>
-<div class="field"><label>Celebration emoji</label><input id="shareEmoji" value="🎉" maxlength="16"></div>
+<div class="row"><div class="field"><label>SHA-256 emoji</label><input id="shareEmojiSha" value="₿" maxlength="16"></div><div class="field"><label>Blake3 / Alephium emoji</label><input id="shareEmojiBlake" value="⚡" maxlength="16"></div></div>
+<div class="field"><label>Default / other algorithms</label><input id="shareEmojiDefault" value="🎉" maxlength="16"></div>
 <div class="emoji-picker" id="emojiPicker">
 <button onclick="pickEmoji('🎉')">🎉</button><button onclick="pickEmoji('🇺🇸')">🇺🇸</button><button onclick="pickEmoji('🪙')">🪙</button>
 <button onclick="pickEmoji('₿')">₿</button><button onclick="pickEmoji('💰')">💰</button><button onclick="pickEmoji('💵')">💵</button>
@@ -2508,16 +2552,16 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 <button onclick="pickEmoji('🟢')">🟢</button><button onclick="pickEmoji('⭐')">⭐</button><button onclick="pickEmoji('🐂')">🐂</button>
 <button onclick="pickEmoji('🦅')">🦅</button><button onclick="pickEmoji('🌙')">🌙</button><button onclick="pickEmoji('🧱')">🧱</button>
 </div>
-<div style="color:#8da0b8;font-size:13px;margin-top:7px">Pick one above, or type/paste any emoji you like.</div>
+<div style="color:#8da0b8;font-size:13px;margin-top:7px">Click a field, then pick a preset—or type/paste any emoji. Each algorithm can celebrate differently.</div>
 <div class="field"><label>Animation amount (1–30)</label><input id="density" type="number" min="1" max="30" value="7"></div>
 <div class="actions"><button class="btn" onclick="closeSettings()">Cancel</button><button class="btn primary" onclick="saveSettings()">Save</button></div>
 </div></div>
 
 <div class="modal" id="customModal"><div class="dialog card" style="width:min(760px,100%);max-height:90vh;overflow:auto">
 <div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">Dashboard Customization</h2><button class="btn" onclick="closeCustomization()">Close</button></div>
-<div class="custom-preview" id="customPreview" style="margin-top:14px"><div class="custom-preview-card"><b>Miner Card</b><div class="sub">Glass + theme preview</div><div class="hash" style="font-size:22px;margin:8px 0">38.2 TH/s</div></div></div>
+<div class="custom-preview" id="customPreview" style="margin-top:14px"><div class="custom-preview-card"><b>Miner Card</b><div class="sub">Glass + theme preview</div><div class="hash">38.2 TH/s</div></div></div>
 <div class="field"><label>Background theme</label><select id="cTheme">
-<option value="midnight">Midnight</option><option value="aurora">Aurora</option><option value="bitcoin">Bitcoin Orange</option><option value="matrix">Matrix</option><option value="ocean">Deep Ocean</option>
+<option value="midnight">Midnight</option><option value="mining-room">ASIC Mining Room (Photo)</option><option value="aurora">Aurora</option><option value="bitcoin">Bitcoin Orange</option><option value="matrix">Matrix</option><option value="ocean">Deep Ocean</option>
 </select></div>
 <div class="field"><label>Miner/card transparency</label><div class="range-row"><input id="cOpacity" type="range" min="0.30" max="1" step="0.02"><span id="cOpacityVal">82%</span></div></div>
 <div class="field"><label>Glass blur</label><div class="range-row"><input id="cBlur" type="range" min="0" max="30" step="1"><span id="cBlurVal">14px</span></div></div>
@@ -2577,7 +2621,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 </div>
 </div></div>
 <script>
-let miners=[], settings={share_emoji:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api"}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null;
+let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api"}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null;
 const $=id=>document.getElementById(id);
 function fmt(v,d=1){return v==null?'--':Number(v).toFixed(d)}
 
@@ -2677,20 +2721,22 @@ async function copyDiag(){
  catch(e){toast('Copy failed — select the text manually')}
 }
 
-function pickEmoji(e){$('shareEmoji').value=e}
-function openSettings(){$('settingsModal').classList.add('show');$('shareEmoji').value=settings.share_emoji;$('density').value=settings.animation_density}
+function pickEmoji(e){$(activeEmojiField).value=e}
+['shareEmojiSha','shareEmojiBlake','shareEmojiDefault'].forEach(id=>document.addEventListener('focusin',e=>{if(e.target?.id===id)activeEmojiField=id}));
+function openSettings(){$('settingsModal').classList.add('show');$('shareEmojiSha').value=settings.share_emoji_sha256||settings.share_emoji;$('shareEmojiBlake').value=settings.share_emoji_blake3||settings.share_emoji;$('shareEmojiDefault').value=settings.share_emoji_default||settings.share_emoji;$('density').value=settings.animation_density}
 function closeSettings(){$('settingsModal').classList.remove('show')}
 async function saveSettings(){
- let body={share_emoji:$('shareEmoji').value||'🎉',animation_density:Number($('density').value)||7,celebrate_rejected:false};
+ let fallback=$('shareEmojiDefault').value||'🎉';let body={share_emoji:fallback,share_emoji_sha256:$('shareEmojiSha').value||fallback,share_emoji_blake3:$('shareEmojiBlake').value||fallback,share_emoji_default:fallback,animation_density:Number($('density').value)||7,celebrate_rejected:false};
  settings=await fetch('/api/settings',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());closeSettings();$('emojiBtn').textContent=settings.share_emoji+' Emoji';toast('Celebration saved')
 }
 function toast(s){$('toast').textContent=s;$('toast').style.display='block';setTimeout(()=>$('toast').style.display='none',2200)}
-function celebrate(name,count=1,type='share'){
- let n=Math.min(30,Math.max(settings.animation_density,count)); for(let i=0;i<n;i++){setTimeout(()=>{let e=document.createElement('div');e.className='celebrate';e.textContent=type==='best_share'?'🏆':settings.share_emoji;
+function emojiForAlgorithm(algorithm){if(algorithm==='SHA-256')return settings.share_emoji_sha256||settings.share_emoji;if(algorithm==='Blake3')return settings.share_emoji_blake3||settings.share_emoji;return settings.share_emoji_default||settings.share_emoji||'🎉'}
+function celebrate(name,count=1,type='share',algorithm=''){
+ algorithm=algorithm||miners.find(m=>m.name===name)?.algorithm||'';let chosen=emojiForAlgorithm(algorithm);let n=Math.min(30,Math.max(settings.animation_density,count)); for(let i=0;i<n;i++){setTimeout(()=>{let e=document.createElement('div');e.className='celebrate';e.textContent=type==='best_share'?'🏆':chosen;
  e.style.left=(5+Math.random()*90)+'vw';e.style.top=(-10-Math.random()*20)+'px';document.body.appendChild(e);setTimeout(()=>e.remove(),2400)},i*75)}
- toast(type==='best_share'?`🏆 New best share — ${name}`:`${settings.share_emoji} ${name} submitted ${count>1?count+' shares':'a share'}`);
+ toast(type==='best_share'?`🏆 New best share — ${name}`:`${chosen} ${name} submitted ${count>1?count+' shares':'a share'}`);
  let row=$('stream'); if(row.children.length===1&&row.textContent.includes('Waiting'))row.innerHTML='';
- let item=document.createElement('div');item.className='stream-item';item.innerHTML=`${type==='best_share'?'🏆':settings.share_emoji}<small>${esc(name)}</small>`;row.prepend(item);while(row.children.length>12)row.lastChild.remove();
+ let item=document.createElement('div');item.className='stream-item';item.innerHTML=`${type==='best_share'?'🏆':chosen}<small>${esc(name)}</small>`;row.prepend(item);while(row.children.length>12)row.lastChild.remove();
 }
 async function loadFleetSummary(){try{let s=await fetch('/api/fleet-summary').then(r=>r.json()),sha=s.algorithms?.['SHA-256'],bl=s.algorithms?.['Blake3'];$('shaHash').textContent=sha&&sha.hashrate?fmt(sha.hashrate)+' '+(sha.unit||''):'--';$('shaCount').textContent=sha?`${sha.online}/${sha.count} online`:'0 miners';$('blakeHash').textContent=bl&&bl.hashrate?fmt(bl.hashrate)+' '+(bl.unit||''):'--';$('blakeCount').textContent=bl?`${bl.online}/${bl.count} online`:'0 miners';$('sharesToday').textContent=s.shares_today==null?'--':Number(s.shares_today).toLocaleString();$('sharesSession').textContent=s.shares_session==null?'':`Session: ${Number(s.shares_session).toLocaleString()} · Lifetime: ${Number(s.shares_lifetime||0).toLocaleString()}`;$('temp').textContent=s.avg_temp_c==null?'--°C':fmt(s.avg_temp_c,0)+'°C';$('fleetOnline').textContent=`${s.online}/${s.total} online`;$('power').textContent=s.known_power_w?fmt(s.known_power_w/1000,2)+' kW':'--';$('unknownPower').textContent=s.unknown_power_miners?`${s.unknown_power_miners} miner(s) don't report watts`:'All miners report power';$('fleetBestShare').textContent=s.fleet_best?fmtShare(s.fleet_best.value):'--';$('fleetBestMiner').textContent=s.fleet_best?`Miner: ${s.fleet_best.miner_name}`:'No reported best share'}catch(e){}}
 async function loadMiniSpark(id){try{let rows=await fetch(`/api/miners/${id}/history?seconds=3600`).then(r=>r.json()),h=$(`spark-${id}`);if(!h)return;let v=rows.map(r=>r.hashrate).filter(x=>x!=null).map(Number);if(v.length<2){h.innerHTML='<div class="sub" style="padding:10px 0">Collecting history…</div>';return}let mn=Math.min(...v),mx=Math.max(...v);if(mx===mn)mx=mn+1;let pts=[];rows.forEach((r,i)=>{if(r.hashrate==null)return;let x=i/Math.max(1,rows.length-1)*195,y=40-(Number(r.hashrate)-mn)/(mx-mn)*34;pts.push(`${x.toFixed(1)},${y.toFixed(1)}`)});h.innerHTML=`<svg viewBox="0 0 195 45" preserveAspectRatio="none" style="width:100%;height:42px"><polyline fill="none" stroke="#38b6ff" stroke-width="1.5" points="${pts.join(' ')}"/></svg>`}catch(e){}}
@@ -2770,7 +2816,7 @@ function applyCustomization(c){
  root.style.setProperty('--card-opacity',Number(customization.card_opacity||.82));
  root.style.setProperty('--glass-blur',`${Number(customization.blur_px||0)}px`);
  root.style.setProperty('--bg-intensity',Number(customization.background_intensity||1));
- document.body.classList.remove('theme-aurora','theme-bitcoin','theme-matrix','theme-ocean','compact');
+ document.body.classList.remove('theme-aurora','theme-bitcoin','theme-matrix','theme-ocean','theme-mining-room','compact');
  if(customization.theme && customization.theme!=='midnight')document.body.classList.add(`theme-${customization.theme}`);
  if(customization.compact_cards)document.body.classList.add('compact');
 }
@@ -2870,12 +2916,15 @@ async function openNetwork(){
  }catch(e){$('networkCards').innerHTML=`<div class="health-item">❌ Could not load network status: ${esc(String(e))}</div>`}
 }
 function closeNetwork(){$('networkModal').classList.remove('show')}
+async function refreshFleetBestRing(){
+ try{const s=await fetch('/api/fleet-summary').then(r=>r.json());fleetBestMinerId=s.fleet_best?.miner_id??null;document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]);card.classList.toggle('fleet-best',id===fleetBestMinerId)})}catch(e){}
+}
 function connectWS(){
  let proto=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(`${proto}://${location.host}/ws`);
  ws.onopen=()=>{$('wsState').textContent='LIVE';$('wsState').style.color='#31da7a';ws.send('hello')};
  ws.onmessage=e=>{let x=JSON.parse(e.data);if(x.type==='share')celebrate(x.miner_name,x.count);if(x.type==='best_share')celebrate(x.miner_name,1,'best_share');if(x.type==='rejected_share')toast(`❌ ${x.miner_name}: ${x.count} rejected`);if(x.type==='miner_offline')toast(`🔴 ${x.miner_name} went offline`);if(x.type==='miner_recovered')toast(`🟢 ${x.miner_name} recovered`);if(x.type==='temperature_warning')toast(`🌡️ ${x.miner_name}: ${x.value}°C`);if(x.type==='hashrate_drop')toast(`⚠️ ${x.miner_name}: hashrate drop`);if(x.type==='new_block')newBlockCelebrate(x);if(x.type==='telemetry')setTimeout(load,200)};
  ws.onclose=()=>{$('wsState').textContent='reconnecting…';setTimeout(connectWS,2000)}
 }
-load();connectWS();setInterval(load,10000);setInterval(loadBlockStatus,20000);
+load();connectWS();refreshFleetBestRing();setInterval(load,10000);setInterval(refreshFleetBestRing,10000);setInterval(loadBlockStatus,20000);
 </script>
 </body></html>"""
