@@ -125,7 +125,7 @@ manager = WSManager()
 latest_telemetry: dict[int, Telemetry] = {}
 latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
-app = FastAPI(title="RigPulse", version="0.3.3")
+app = FastAPI(title="RigPulse", version="0.3.4")
 
 
 def db():
@@ -2514,7 +2514,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
     <div class="block-icon">₿</div>
     <div>
       <div class="block-main"><span class="block-height" id="blockHeight">Bitcoin block —</span><span class="block-hash" id="blockHash">waiting for network…</span></div>
-      <div class="block-meta"><span>Age <b id="blockAge">—</b></span><span>Transactions <b id="blockTx">—</b></span><span>Size <b id="blockSize">—</b></span><span>Source <b id="blockSource">mempool.space</b></span></div>
+      <div class="block-meta"><span>Age <b id="blockAge">—</b></span><span>Transactions <b id="blockTx">—</b></span><span>Size <b id="blockSize">—</b></span><span>Difficulty <b id="blockDifficulty">—</b></span><span>Source <b id="blockSource">mempool.space</b></span></div>
     </div>
     <div class="status green" id="blockState">● LIVE</div>
   </section>
@@ -2868,7 +2868,7 @@ async function loadBlockStatus(){
   const b=await fetch('/api/block-status').then(r=>r.json());
   if(!b.available){$('blockHeight').textContent='Bitcoin block unavailable';$('blockHash').textContent=b.error||'waiting for network…';$('blockState').textContent='● WAITING';$('blockState').className='status orange';return}
   $('blockHeight').textContent=`Block ${Number(b.height).toLocaleString()}`;$('blockHash').textContent=shortHash(b.hash);
-  $('blockAge').textContent=blockAge(b.timestamp);$('blockTx').textContent=b.tx_count==null?'—':Number(b.tx_count).toLocaleString();$('blockSize').textContent=humanBytes(b.size);
+  $('blockAge').textContent=blockAge(b.timestamp);$('blockTx').textContent=b.tx_count==null?'—':Number(b.tx_count).toLocaleString();$('blockSize').textContent=humanBytes(b.size);$('blockDifficulty').textContent=fmtDifficulty(b.difficulty);
   $('blockSource').textContent=(b.source||'').replace(/^https?:\/\//,'').replace(/\/api\/?$/,'');$('blockState').textContent='● LIVE';$('blockState').className='status green';
  }catch(e){}
 }
