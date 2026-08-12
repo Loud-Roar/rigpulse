@@ -125,7 +125,7 @@ manager = WSManager()
 latest_telemetry: dict[int, Telemetry] = {}
 latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
-app = FastAPI(title="RigPulse", version="0.3.4")
+app = FastAPI(title="RigPulse", version="0.3.5")
 
 
 def db():
@@ -2425,6 +2425,7 @@ button,input,select{font:inherit}
 .toolbar{display:flex;gap:8px;margin:14px 0;align-items:center}.toolbar .spacer{flex:1}
 .grid{display:grid;grid-template-columns:repeat(3,minmax(250px,1fr));gap:12px}
 .miner{padding:16px;position:relative;overflow:hidden}.miner.offline{border-color:#6f232a}.miner.online{border-color:#1b6f46}.miner-head{display:flex;justify-content:space-between;gap:10px}.miner h3{margin:0;font-size:18px}.sub{color:#8295ac;font-size:12px;margin-top:3px}.status{font-size:12px}.hash{font-size:30px;font-weight:800;margin:18px 0 8px;color:#6fd2ff}.spark{height:42px;width:100%;margin:4px 0 10px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;border-top:1px solid #15263a;padding-top:12px}.stats b{display:block;font-size:13px}.stats span{color:#8091a5;font-size:10px}
+.miner button[onclick^="probe("],.miner button[onclick^="diagnose("],.miner button[onclick^="iceRaw("]{display:none}
 .miner.fleet-best{overflow:visible;isolation:isolate}.miner.fleet-best::before{content:"";position:absolute;inset:-3px;z-index:2;border-radius:17px;padding:3px;background:conic-gradient(from var(--best-angle),#ff3b6b,#ffb629,#54ef78,#2ee7ff,#785bff,#ff3bce,#ff3b6b);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;animation:bestRing 4s linear infinite;filter:drop-shadow(0 0 6px rgba(70,190,255,.4))}.miner.fleet-best::after{content:"Fleet Best";position:absolute;z-index:3;right:12px;top:-10px;background:#07111d;border:1px solid #4dcfff;color:#9feaff;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:800}.miner.fleet-best>.miner-head{position:relative}@property --best-angle{syntax:'<angle>';initial-value:0deg;inherits:false}@keyframes bestRing{to{--best-angle:360deg}}@media(prefers-reduced-motion:reduce){.miner.fleet-best::before{animation:none}}
 .modal{display:none;position:fixed;inset:0;background:#000a;z-index:20;align-items:center;justify-content:center;padding:20px}.modal.show{display:flex}.dialog{width:min(540px,100%);padding:20px}.dialog h2{margin-top:0}.field{margin:12px 0}.field label{display:block;color:#91a4bb;font-size:12px;margin-bottom:5px}.field input,.field select{width:100%;background:#07111d;color:white;border:1px solid #24364a;border-radius:9px;padding:11px}
 .row{display:flex;gap:8px}.row>*{flex:1}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
@@ -2589,7 +2590,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 
 
 <div class="modal" id="detailModal"><div class="dialog card" style="width:min(1100px,100%);max-height:92vh;overflow:auto"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="sub">Miner Detail</div><h2 id="detailTitle" style="margin:2px 0 0"></h2></div><button class="btn" onclick="closeDetail()">Close</button></div><div class="tabs" style="margin-top:12px"><button class="pill" onclick="loadDetailHistory(900)">15m</button><button class="pill" onclick="loadDetailHistory(3600)">1h</button><button class="pill" onclick="loadDetailHistory(86400)">24h</button><button class="pill" onclick="loadDetailHistory(604800)">7d</button></div><div class="detail-grid" id="detailStats" style="margin-top:12px"></div><div class="detail-tabs"><button class="pill detail-tab active" onclick="showDetailSection('charts',this)">Charts</button><button class="pill detail-tab" onclick="showDetailSection('hardware',this)">Hardware</button><button class="pill detail-tab" onclick="showDetailSection('events',this)">Events</button></div>
-<div id="detailHardware" style="display:none"></div><div id="detailCharts"><div class="chart-wrap"><b>Hashrate</b><canvas id="hashChart" class="chart-canvas"></canvas></div><div class="chart-wrap"><b>Temperature</b><canvas id="tempChart" class="chart-canvas"></canvas></div><div class="chart-wrap"><b>Power</b><canvas id="powerChart" class="chart-canvas"></canvas></div></div><div id="detailEventsWrap" style="display:none"><div class="section-title">Recent Events</div><div id="detailEvents"></div></div></div></div>
+<div id="detailHardware" style="display:none"></div><div id="detailCharts"><div class="chart-wrap"><b>Hashrate</b><canvas id="hashChart" class="chart-canvas"></canvas></div><div class="chart-wrap"><b>Temperature</b><canvas id="tempChart" class="chart-canvas"></canvas></div><div class="chart-wrap"><b>Power</b><canvas id="powerChart" class="chart-canvas"></canvas></div></div><div id="detailEventsWrap" style="display:none"><div class="section-title">Recent Events</div><div id="detailEvents"></div></div><div class="section-title">Troubleshooting</div><div class="tabs"><button class="btn" onclick="probe(selectedMinerId)">Probe API</button><button class="btn" onclick="diagnose(selectedMinerId)">Run Diagnostics</button><button class="btn" id="detailIceRaw" onclick="iceRaw(selectedMinerId)">IceRiver Raw</button></div></div></div>
 <div class="modal" id="logsModal"><div class="dialog card" style="width:min(1100px,100%);max-height:90vh;overflow:auto">
 <div style="display:flex;justify-content:space-between;align-items:center"><div><h2 style="margin:0">Event Logs</h2><div class="sub">Shares, best shares, miner state, alerts and new blocks</div></div><button class="btn" onclick="closeLogs()">Close</button></div>
 <div class="log-toolbar"><span class="log-badge" id="logCount">0 events</span><button class="btn" onclick="loadLogs()">Refresh</button></div><div id="fleetEvents" style="margin-top:8px"></div></div></div>
@@ -2630,7 +2631,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 </div>
 </div></div>
 <script>
-let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api"}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null;
+let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api"}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map();
 const $=id=>document.getElementById(id);
 function fmt(v,d=1){return v==null?'--':Number(v).toFixed(d)}
 
@@ -2704,12 +2705,13 @@ async function saveMiner(){
  closeAdd(); editingMinerId=null; await load(); toast(msg);
 }
 async function probe(id){let r=await fetch(`/api/miners/${id}/probe`,{method:'POST'});let x=await r.json();toast(x.online?'Miner API responded':'No supported API response yet');await load()}
+async function responseData(r){const text=await r.text();if(!r.ok)throw new Error(text||`Server returned HTTP ${r.status}`);try{return JSON.parse(text)}catch(e){throw new Error(text||'Server returned an invalid response')}}
 async function iceRaw(id){
  $('diagOut').textContent='POSTing /user/userpanel with post=4…';
  $('diagModal').classList.add('show');
  try{
    let r=await fetch(`/api/miners/${id}/iceriver-post4-diagnostic`);
-   let x=await r.json();
+   let x=await responseData(r);
    $('diagOut').textContent=JSON.stringify(x,null,2);
  }catch(e){$('diagOut').textContent='IceRiver diagnostic failed: '+e}
 }
@@ -2720,7 +2722,7 @@ async function diagnose(id){
  try{
    let r=await fetch(`/api/miners/${id}/diagnostics`);
    clearTimeout(timer);
-   let x=await r.json();
+   let x=await responseData(r);
    $('diagOut').textContent=JSON.stringify({miner:x.miner,useful_count:x.useful_count,useful:x.useful,discovered_endpoints:x.discovered_endpoints||[],endpoint_results:x.endpoint_results||[],js_hints:x.js_hints||[]},null,2);
  }catch(e){clearTimeout(timer);$('diagOut').textContent='Diagnostics failed: '+e}
 }
@@ -2930,11 +2932,12 @@ async function openNetwork(){
 function closeNetwork(){$('networkModal').classList.remove('show')}
 function applyFleetBestRing(){document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]);card.classList.toggle('fleet-best',id===fleetBestMinerId)})}
 async function refreshFleetBestRing(){try{const s=await fetch('/api/fleet-summary').then(r=>r.json());fleetBestMinerId=s.fleet_best?.miner_id??null;applyFleetBestRing()}catch(e){}}
-new MutationObserver(()=>requestAnimationFrame(applyFleetBestRing)).observe($('miners'),{childList:true});
+function stabilizeMinerCards(){applyFleetBestRing();document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]),m=miners.find(x=>x.id===id),spark=$(`spark-${id}`);if(spark&&sparkCache.has(id))spark.innerHTML=sparkCache.get(id);const stats=card.querySelector('.stats');if(stats&&!stats.querySelector('.fan-stat'))stats.insertAdjacentHTML('beforeend',`<div class="fan-stat"><span>Fan Speed</span><b>${m?.telemetry?.fan_rpm!=null?fmt(m.telemetry.fan_rpm,0)+' RPM':'--'}</b></div>`)})}
+new MutationObserver(()=>requestAnimationFrame(stabilizeMinerCards)).observe($('miners'),{childList:true});
 function connectWS(){
  let proto=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(`${proto}://${location.host}/ws`);
  ws.onopen=()=>{$('wsState').textContent='LIVE';$('wsState').style.color='#31da7a';ws.send('hello')};
- ws.onmessage=e=>{let x=JSON.parse(e.data);if(x.type==='share')celebrate(x.miner_name,x.count);if(x.type==='best_share')celebrate(x.miner_name,1,'best_share');if(x.type==='rejected_share')toast(`❌ ${x.miner_name}: ${x.count} rejected`);if(x.type==='miner_offline')toast(`🔴 ${x.miner_name} went offline`);if(x.type==='miner_recovered')toast(`🟢 ${x.miner_name} recovered`);if(x.type==='temperature_warning')toast(`🌡️ ${x.miner_name}: ${x.value}°C`);if(x.type==='hashrate_drop')toast(`⚠️ ${x.miner_name}: hashrate drop`);if(x.type==='new_block')newBlockCelebrate(x);if(x.type==='telemetry')setTimeout(load,200)};
+ ws.onmessage=e=>{let x=JSON.parse(e.data);if(x.type==='share')celebrate(x.miner_name,x.count);if(x.type==='best_share')celebrate(x.miner_name,1,'best_share');if(x.type==='rejected_share')toast(`❌ ${x.miner_name}: ${x.count} rejected`);if(x.type==='miner_offline')toast(`🔴 ${x.miner_name} went offline`);if(x.type==='miner_recovered')toast(`🟢 ${x.miner_name} recovered`);if(x.type==='temperature_warning')toast(`🌡️ ${x.miner_name}: ${x.value}°C`);if(x.type==='hashrate_drop')toast(`⚠️ ${x.miner_name}: hashrate drop`);if(x.type==='new_block')newBlockCelebrate(x)};
  ws.onclose=()=>{$('wsState').textContent='reconnecting…';setTimeout(connectWS,2000)}
 }
 load();connectWS();refreshFleetBestRing();setInterval(load,10000);setInterval(refreshFleetBestRing,10000);setInterval(loadBlockStatus,20000);
