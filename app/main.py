@@ -125,7 +125,7 @@ manager = WSManager()
 latest_telemetry: dict[int, Telemetry] = {}
 latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
-app = FastAPI(title="RigPulse", version="0.3.2")
+app = FastAPI(title="RigPulse", version="0.3.3")
 
 
 def db():
@@ -1433,6 +1433,11 @@ async def mining_room_background():
     return FileResponse(Path(__file__).parent / "assets" / "mining-room.webp", media_type="image/webp")
 
 
+@app.get("/assets/liquid-data-center.webp")
+async def liquid_data_center_background():
+    return FileResponse(Path(__file__).parent / "assets" / "liquid-data-center.webp", media_type="image/webp")
+
+
 @app.get("/favicon.svg")
 async def favicon():
     return Response(content=FAVICON_SVG, media_type="image/svg+xml")
@@ -2394,12 +2399,15 @@ body.theme-bitcoin{--accent-rgb:247,147,26}
 body.theme-matrix{--accent-rgb:50,255,112}
 body.theme-ocean{--accent-rgb:45,132,255}
 body.theme-mining-room{--accent-rgb:58,172,255}
+body.theme-liquid-lab{--accent-rgb:71,205,255}
 body.theme-aurora::before{background:radial-gradient(circle at 80% 5%,rgba(56,255,184,calc(.22 * var(--bg-intensity))),transparent 31%),radial-gradient(circle at 15% 75%,rgba(126,82,255,calc(.17 * var(--bg-intensity))),transparent 37%),linear-gradient(135deg,#030b12,#07151b 50%,#050917)}
 body.theme-bitcoin::before{background:radial-gradient(circle at 82% 4%,rgba(247,147,26,calc(.26 * var(--bg-intensity))),transparent 30%),radial-gradient(circle at 20% 80%,rgba(255,70,30,calc(.10 * var(--bg-intensity))),transparent 35%),linear-gradient(135deg,#090805,#120d07 48%,#05080e)}
 body.theme-matrix::before{background:radial-gradient(circle at 76% 7%,rgba(45,255,105,calc(.18 * var(--bg-intensity))),transparent 32%),linear-gradient(135deg,#020805,#06110a 50%,#020706)}
 body.theme-ocean::before{background:radial-gradient(circle at 84% 5%,rgba(37,130,255,calc(.28 * var(--bg-intensity))),transparent 30%),radial-gradient(circle at 10% 80%,rgba(0,210,255,calc(.10 * var(--bg-intensity))),transparent 36%),linear-gradient(135deg,#020714,#061325 50%,#030917)}
 body.theme-mining-room::before{background:linear-gradient(rgba(2,8,18,.58),rgba(2,8,18,.68)),url('/assets/mining-room.webp') center/cover fixed no-repeat;filter:brightness(calc(.38 + var(--bg-intensity) * .18))}
 body.theme-mining-room::after{opacity:.08}
+body.theme-liquid-lab::before{background:linear-gradient(rgba(2,6,18,.56),rgba(2,6,18,.68)),url('/assets/liquid-data-center.webp') center/cover fixed no-repeat;filter:brightness(calc(.38 + var(--bg-intensity) * .18))}
+body.theme-liquid-lab::after{opacity:.06}
 button,input,select{font:inherit}
 .app{display:grid;grid-template-columns:180px 1fr;min-height:100vh}
 .sidebar{border-right:1px solid rgba(90,130,180,.18);padding:22px 14px;position:sticky;top:0;height:100vh;background:rgba(5,13,24,.70);backdrop-filter:blur(var(--glass-blur))}
@@ -2417,7 +2425,7 @@ button,input,select{font:inherit}
 .toolbar{display:flex;gap:8px;margin:14px 0;align-items:center}.toolbar .spacer{flex:1}
 .grid{display:grid;grid-template-columns:repeat(3,minmax(250px,1fr));gap:12px}
 .miner{padding:16px;position:relative;overflow:hidden}.miner.offline{border-color:#6f232a}.miner.online{border-color:#1b6f46}.miner-head{display:flex;justify-content:space-between;gap:10px}.miner h3{margin:0;font-size:18px}.sub{color:#8295ac;font-size:12px;margin-top:3px}.status{font-size:12px}.hash{font-size:30px;font-weight:800;margin:18px 0 8px;color:#6fd2ff}.spark{height:42px;width:100%;margin:4px 0 10px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;border-top:1px solid #15263a;padding-top:12px}.stats b{display:block;font-size:13px}.stats span{color:#8091a5;font-size:10px}
-.miner.fleet-best{overflow:visible;border-color:transparent}.miner.fleet-best::before{content:"";position:absolute;inset:-3px;z-index:-1;border-radius:17px;background:conic-gradient(from var(--best-angle),#ff3b6b,#ffb629,#54ef78,#2ee7ff,#785bff,#ff3bce,#ff3b6b);animation:bestRing 4s linear infinite;filter:drop-shadow(0 0 9px rgba(70,190,255,.45))}.miner.fleet-best::after{content:"Fleet Best";position:absolute;right:12px;top:-10px;background:#07111d;border:1px solid #4dcfff;color:#9feaff;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:800}.miner.fleet-best>.miner-head{position:relative}.miner.fleet-best{background:linear-gradient(180deg,rgba(13,27,44,.98),rgba(6,15,27,.98))}@property --best-angle{syntax:'<angle>';initial-value:0deg;inherits:false}@keyframes bestRing{to{--best-angle:360deg}}@media(prefers-reduced-motion:reduce){.miner.fleet-best::before{animation:none}}
+.miner.fleet-best{overflow:visible;isolation:isolate}.miner.fleet-best::before{content:"";position:absolute;inset:-3px;z-index:2;border-radius:17px;padding:3px;background:conic-gradient(from var(--best-angle),#ff3b6b,#ffb629,#54ef78,#2ee7ff,#785bff,#ff3bce,#ff3b6b);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;animation:bestRing 4s linear infinite;filter:drop-shadow(0 0 6px rgba(70,190,255,.4))}.miner.fleet-best::after{content:"Fleet Best";position:absolute;z-index:3;right:12px;top:-10px;background:#07111d;border:1px solid #4dcfff;color:#9feaff;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:800}.miner.fleet-best>.miner-head{position:relative}@property --best-angle{syntax:'<angle>';initial-value:0deg;inherits:false}@keyframes bestRing{to{--best-angle:360deg}}@media(prefers-reduced-motion:reduce){.miner.fleet-best::before{animation:none}}
 .modal{display:none;position:fixed;inset:0;background:#000a;z-index:20;align-items:center;justify-content:center;padding:20px}.modal.show{display:flex}.dialog{width:min(540px,100%);padding:20px}.dialog h2{margin-top:0}.field{margin:12px 0}.field label{display:block;color:#91a4bb;font-size:12px;margin-bottom:5px}.field input,.field select{width:100%;background:#07111d;color:white;border:1px solid #24364a;border-radius:9px;padding:11px}
 .row{display:flex;gap:8px}.row>*{flex:1}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .celebrate{position:fixed;pointer-events:none;z-index:50;font-size:30px;animation:fall 2.2s ease-out forwards}
@@ -2449,6 +2457,7 @@ button,input,select{font:inherit}
 .custom-preview{min-height:142px;border-radius:13px;border:1px solid rgba(var(--accent-rgb),.28);background:linear-gradient(135deg,rgba(var(--accent-rgb),.18),rgba(5,12,22,.45));padding:16px;display:flex;align-items:center;overflow:hidden}
 .custom-preview-card{width:min(430px,72%);min-height:86px;border-radius:12px;background:rgba(8,20,34,var(--card-opacity));border:1px solid rgba(var(--accent-rgb),.3);backdrop-filter:blur(var(--glass-blur));padding:12px;display:flex;flex-direction:column;justify-content:center}.custom-preview-card .hash{font-size:22px;margin:7px 0 0;line-height:1.15}
 .range-row{display:grid;grid-template-columns:1fr 70px;gap:10px;align-items:center}
+.background-choices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:8px}.background-choice{min-height:72px;border:1px solid #29405b;border-radius:11px;color:#fff;text-align:left;padding:10px;cursor:pointer;background:#07111d center/cover}.background-choice.active{border-color:#62d7ff;box-shadow:0 0 0 2px rgba(70,200,255,.22)}.background-choice span{display:inline-block;background:rgba(2,8,18,.78);border-radius:7px;padding:4px 7px;font-size:11px}.bg-mining{background-image:linear-gradient(#04102088,#04102088),url('/assets/mining-room.webp')}.bg-liquid{background-image:linear-gradient(#04102077,#04102077),url('/assets/liquid-data-center.webp')}.bg-colors{background-image:linear-gradient(135deg,#0a1f3d,#1a0e35,#063a39)}@media(max-width:650px){.background-choices{grid-template-columns:1fr}}
 .nav-sep{height:1px;background:#14243a;margin:8px 5px}
 body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;font-size:27px} body.compact .miner .spark{height:32px}
 
@@ -2560,8 +2569,8 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 <div class="modal" id="customModal"><div class="dialog card" style="width:min(760px,100%);max-height:90vh;overflow:auto">
 <div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">Dashboard Customization</h2><button class="btn" onclick="closeCustomization()">Close</button></div>
 <div class="custom-preview" id="customPreview" style="margin-top:14px"><div class="custom-preview-card"><b>Miner Card</b><div class="sub">Glass + theme preview</div><div class="hash">38.2 TH/s</div></div></div>
-<div class="field"><label>Background theme</label><select id="cTheme">
-<option value="midnight">Midnight</option><option value="mining-room">ASIC Mining Room (Photo)</option><option value="aurora">Aurora</option><option value="bitcoin">Bitcoin Orange</option><option value="matrix">Matrix</option><option value="ocean">Deep Ocean</option>
+<div class="field"><label>Dashboard background</label><div class="background-choices"><button type="button" class="background-choice bg-mining" data-theme="mining-room" onclick="chooseBackground('mining-room')"><span>ASIC Mining Room</span></button><button type="button" class="background-choice bg-liquid" data-theme="liquid-lab" onclick="chooseBackground('liquid-lab')"><span>Liquid Cooling Lab</span></button><button type="button" class="background-choice bg-colors" data-theme="midnight" onclick="chooseBackground('midnight')"><span>Color Themes</span></button></div><select id="cTheme" style="margin-top:9px">
+<option value="mining-room">ASIC Mining Room (Photo)</option><option value="liquid-lab">Liquid Cooling Lab (Photo)</option><option value="midnight">Midnight</option><option value="aurora">Aurora</option><option value="bitcoin">Bitcoin Orange</option><option value="matrix">Matrix</option><option value="ocean">Deep Ocean</option>
 </select></div>
 <div class="field"><label>Miner/card transparency</label><div class="range-row"><input id="cOpacity" type="range" min="0.30" max="1" step="0.02"><span id="cOpacityVal">82%</span></div></div>
 <div class="field"><label>Glass blur</label><div class="range-row"><input id="cBlur" type="range" min="0" max="30" step="1"><span id="cBlurVal">14px</span></div></div>
@@ -2816,7 +2825,7 @@ function applyCustomization(c){
  root.style.setProperty('--card-opacity',Number(customization.card_opacity||.82));
  root.style.setProperty('--glass-blur',`${Number(customization.blur_px||0)}px`);
  root.style.setProperty('--bg-intensity',Number(customization.background_intensity||1));
- document.body.classList.remove('theme-aurora','theme-bitcoin','theme-matrix','theme-ocean','theme-mining-room','compact');
+ document.body.classList.remove('theme-aurora','theme-bitcoin','theme-matrix','theme-ocean','theme-mining-room','theme-liquid-lab','compact');
  if(customization.theme && customization.theme!=='midnight')document.body.classList.add(`theme-${customization.theme}`);
  if(customization.compact_cards)document.body.classList.add('compact');
 }
@@ -2828,8 +2837,11 @@ function previewCustomization(){
  };
  $('cOpacityVal').textContent=Math.round(c.card_opacity*100)+'%';
  $('cBlurVal').textContent=c.blur_px+'px'; $('cIntensityVal').textContent=c.background_intensity.toFixed(1)+'x';
+ syncBackgroundChoices(c.theme);
  applyCustomization(c);
 }
+function syncBackgroundChoices(theme){document.querySelectorAll('.background-choice').forEach(b=>b.classList.toggle('active',b.dataset.theme===theme||(b.dataset.theme==='midnight'&&!['mining-room','liquid-lab'].includes(theme))))}
+function chooseBackground(theme){$('cTheme').value=theme;previewCustomization()}
 async function openCustomization(){
  customization=await fetch('/api/customization').then(r=>r.json());
  $('cTheme').value=customization.theme;$('cOpacity').value=customization.card_opacity;$('cBlur').value=customization.blur_px;
@@ -2916,9 +2928,9 @@ async function openNetwork(){
  }catch(e){$('networkCards').innerHTML=`<div class="health-item">❌ Could not load network status: ${esc(String(e))}</div>`}
 }
 function closeNetwork(){$('networkModal').classList.remove('show')}
-async function refreshFleetBestRing(){
- try{const s=await fetch('/api/fleet-summary').then(r=>r.json());fleetBestMinerId=s.fleet_best?.miner_id??null;document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]);card.classList.toggle('fleet-best',id===fleetBestMinerId)})}catch(e){}
-}
+function applyFleetBestRing(){document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]);card.classList.toggle('fleet-best',id===fleetBestMinerId)})}
+async function refreshFleetBestRing(){try{const s=await fetch('/api/fleet-summary').then(r=>r.json());fleetBestMinerId=s.fleet_best?.miner_id??null;applyFleetBestRing()}catch(e){}}
+new MutationObserver(()=>requestAnimationFrame(applyFleetBestRing)).observe($('miners'),{childList:true});
 function connectWS(){
  let proto=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(`${proto}://${location.host}/ws`);
  ws.onopen=()=>{$('wsState').textContent='LIVE';$('wsState').style.color='#31da7a';ws.send('hello')};
