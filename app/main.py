@@ -125,7 +125,7 @@ manager = WSManager()
 latest_telemetry: dict[int, Telemetry] = {}
 latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
-app = FastAPI(title="RigPulse", version="0.3.6")
+app = FastAPI(title="RigPulse", version="0.3.7")
 
 
 def db():
@@ -1656,6 +1656,8 @@ async def miner_diagnostics(miner_id: int):
             })
 
     discovered_endpoints = []
+    js_hints = []
+    endpoint_results = []
     if miner["family"] == "iceriver":
         try:
             async with httpx.AsyncClient(timeout=2.0, follow_redirects=True) as client:
@@ -1679,7 +1681,6 @@ async def miner_diagnostics(miner_id: int):
         discovered_endpoints = sorted(set(discovered_endpoints))[:100]
 
         # Capture small JavaScript snippets that reveal how the stock UI asks for live data.
-        js_hints = []
         try:
             async with httpx.AsyncClient(timeout=2.5, follow_redirects=True) as client:
                 home = await client.get(f"http://{ip}/")
@@ -1734,7 +1735,6 @@ async def miner_diagnostics(miner_id: int):
         js_hints = js_hints[:40]
 
         # Probe the mining-relevant discovered endpoints directly.
-        endpoint_results = []
         interesting = [
             p for p in discovered_endpoints
             if p.split("?",1)[0] in (
@@ -1759,9 +1759,6 @@ async def miner_diagnostics(miner_id: int):
                         })
         except Exception:
             endpoint_results = []
-    else:
-        endpoint_results = []
-
     useful = [
         r for r in results
         if (r.get("kind") == "http" and r.get("status") in (200, 401, 403))
@@ -2728,6 +2725,13 @@ async function diagnose(id){
  }catch(e){clearTimeout(timer);$('diagOut').textContent='Diagnostics failed: '+e}
 }
 function closeDiag(){$('diagModal').classList.remove('show')}
+document.addEventListener('click',e=>{
+ const modal=e.target;
+ if(!modal.classList?.contains('modal')||!modal.classList.contains('show'))return;
+ modal.classList.remove('show');
+ if(modal.id==='detailModal')selectedMinerId=null;
+ if(modal.id==='addModal')editingMinerId=null;
+});
 async function copyDiag(){
  try{await navigator.clipboard.writeText($('diagOut').textContent);toast('Diagnostics copied')}
  catch(e){toast('Copy failed — select the text manually')}
