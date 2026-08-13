@@ -125,7 +125,7 @@ manager = WSManager()
 latest_telemetry: dict[int, Telemetry] = {}
 latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
-app = FastAPI(title="RigPulse", version="0.3.5")
+app = FastAPI(title="RigPulse", version="0.3.6")
 
 
 def db():
@@ -2428,6 +2428,7 @@ button,input,select{font:inherit}
 .miner button[onclick^="probe("],.miner button[onclick^="diagnose("],.miner button[onclick^="iceRaw("]{display:none}
 .miner.fleet-best{overflow:visible;isolation:isolate}.miner.fleet-best::before{content:"";position:absolute;inset:-3px;z-index:2;border-radius:17px;padding:3px;background:conic-gradient(from var(--best-angle),#ff3b6b,#ffb629,#54ef78,#2ee7ff,#785bff,#ff3bce,#ff3b6b);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;animation:bestRing 4s linear infinite;filter:drop-shadow(0 0 6px rgba(70,190,255,.4))}.miner.fleet-best::after{content:"Fleet Best";position:absolute;z-index:3;right:12px;top:-10px;background:#07111d;border:1px solid #4dcfff;color:#9feaff;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:800}.miner.fleet-best>.miner-head{position:relative}@property --best-angle{syntax:'<angle>';initial-value:0deg;inherits:false}@keyframes bestRing{to{--best-angle:360deg}}@media(prefers-reduced-motion:reduce){.miner.fleet-best::before{animation:none}}
 .modal{display:none;position:fixed;inset:0;background:#000a;z-index:20;align-items:center;justify-content:center;padding:20px}.modal.show{display:flex}.dialog{width:min(540px,100%);padding:20px}.dialog h2{margin-top:0}.field{margin:12px 0}.field label{display:block;color:#91a4bb;font-size:12px;margin-bottom:5px}.field input,.field select{width:100%;background:#07111d;color:white;border:1px solid #24364a;border-radius:9px;padding:11px}
+#diagModal{z-index:80;background:rgba(0,0,0,.82)}#diagModal .dialog{background:linear-gradient(180deg,rgba(9,22,37,.99),rgba(4,12,22,.99));box-shadow:0 24px 80px rgba(0,0,0,.8)}
 .row{display:flex;gap:8px}.row>*{flex:1}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .celebrate{position:fixed;pointer-events:none;z-index:50;font-size:30px;animation:fall 2.2s ease-out forwards}
 @keyframes fall{0%{transform:translateY(-20px) rotate(0) scale(.7);opacity:0}10%{opacity:1}100%{transform:translateY(75vh) rotate(420deg) scale(1.25);opacity:0}}
