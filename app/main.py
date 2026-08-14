@@ -125,7 +125,7 @@ manager = WSManager()
 latest_telemetry: dict[int, Telemetry] = {}
 latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
-app = FastAPI(title="RigPulse", version="0.3.8")
+app = FastAPI(title="RigPulse", version="0.3.9")
 
 
 def db():
@@ -2495,14 +2495,14 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
  .block-strip{padding:9px;grid-template-columns:auto 1fr;gap:8px}.block-icon{width:34px;height:34px;font-size:19px}.block-height{font-size:16px}.block-hash{display:none}.block-meta{gap:5px 10px;font-size:9px}.block-meta span:nth-child(3),.block-meta span:nth-child(5){display:none}.block-strip>#blockState{position:absolute;right:8px;top:8px;font-size:9px}
  .stream{padding:9px;margin-top:8px}.stream-row{min-height:36px;gap:10px}.stream-item{min-width:42px;font-size:20px}
  .toolbar{gap:5px;margin:9px 0;overflow-x:auto;flex-wrap:nowrap;scrollbar-width:none}.toolbar::-webkit-scrollbar{display:none}.toolbar .pill{flex:0 0 auto;padding:7px 9px;font-size:10px}.toolbar .spacer{display:none}.sort-select{flex:0 0 auto;padding:7px;font-size:10px}.toolbar #onlineCount{flex:0 0 auto;font-size:10px;white-space:nowrap}
- .grid{grid-template-columns:1fr;gap:8px}.miner{padding:11px}.miner h3{font-size:16px}.miner .hash{font-size:23px;margin:9px 0 4px}.miner .spark{height:27px;margin:2px 0 7px}.miner .spark svg{height:27px!important}.stats{grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;padding-top:8px}.stats span{font-size:8px}.stats b{font-size:11px;overflow-wrap:anywhere}.stats>div:nth-child(3),.stats>div:nth-child(5),.stats>div:nth-child(6),.stats>div:nth-child(7){display:none}
- .miner>div:last-child{margin-top:7px!important}.miner>div:last-child small{font-size:10px}.miner>div:last-child .btn{padding:4px 6px!important;font-size:9px!important}
+ .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.miner{padding:9px;min-width:0}.miner-head{display:block}.miner h3{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px}.miner .status{font-size:9px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.miner .sub{font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.miner .hash{font-size:19px;margin:7px 0 3px;white-space:nowrap}.miner .spark{height:21px;margin:1px 0 5px}.miner .spark svg{height:21px!important}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding-top:6px}.stats span{font-size:7px}.stats b{font-size:10px;overflow-wrap:anywhere}.stats>div:nth-child(3),.stats>div:nth-child(5),.stats>div:nth-child(6),.stats>div:nth-child(7){display:none}
+ .miner.fleet-best::after{right:7px;top:-8px;padding:2px 5px;font-size:8px}.miner>div:last-child{margin-top:6px!important;display:block!important;text-align:right}.miner>div:last-child small{display:none}.miner>div:last-child .btn{padding:4px 5px!important;font-size:8px!important}
  .modal{padding:7px;align-items:flex-end}.dialog{padding:14px;width:100%!important;max-height:94dvh!important;border-radius:16px 16px 8px 8px!important}.dialog h2{font-size:20px}.row{display:grid;grid-template-columns:1fr}.actions{position:sticky;bottom:-14px;background:rgba(5,14,25,.96);padding:9px 0 14px;margin-top:12px}
  .detail-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.detail-stat{padding:8px}.detail-stat small{font-size:9px}.detail-stat b{font-size:13px}.chart-canvas{height:145px}.chart-wrap{padding:7px;margin-top:8px}
  .network-grid{grid-template-columns:repeat(2,1fr)}.hardware-grid{grid-template-columns:1fr}.emoji-picker{grid-template-columns:repeat(6,1fr)}.background-choices{grid-template-columns:repeat(3,1fr)}.background-choice{min-height:58px;padding:6px}.custom-preview{min-height:100px;padding:9px}.custom-preview-card{width:82%;min-height:70px;padding:9px}
  .event-table{display:block;overflow-x:auto}.toast{width:calc(100% - 20px);text-align:center}
 }
-@media(max-width:360px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:360px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.grid{gap:6px}.miner{padding:8px}.miner .hash{font-size:17px}}
 </style>
 </head>
 <body>
