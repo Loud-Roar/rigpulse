@@ -102,6 +102,7 @@ class CustomizationIn(BaseModel):
     block_api_base: str = "https://mempool.space/api"
     btc_wallet_address: str = ""
     bch_wallet_address: str = ""
+    bch_solopool_address: str = ""
 
 
 class WSManager:
@@ -132,7 +133,7 @@ latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
-app = FastAPI(title="RigPulse", version="0.4.0")
+app = FastAPI(title="RigPulse", version="0.4.1")
 
 
 def db():
@@ -188,6 +189,11 @@ def init_db():
             pool_key TEXT NOT NULL DEFAULT '', found_at INTEGER, active INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(miner_id) REFERENCES miners(id)
         );
+        CREATE TABLE IF NOT EXISTS pool_block_claims (
+            miner_id INTEGER PRIMARY KEY, pool_address TEXT NOT NULL, block_hash TEXT NOT NULL,
+            block_height INTEGER, found_at INTEGER, active INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(miner_id) REFERENCES miners(id)
+        );
         """)
         defaults = {
             "share_emoji": "🎉",
@@ -204,6 +210,7 @@ def init_db():
             "block_api_base": "https://mempool.space/api",
             "btc_wallet_address": "",
             "bch_wallet_address": "",
+            "bch_solopool_address": "",
         }
         for k,v in defaults.items():
             c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k,v))
@@ -235,6 +242,7 @@ def get_customization():
         "block_api_base": rows.get("block_api_base", "https://mempool.space/api").rstrip("/"),
         "btc_wallet_address": rows.get("btc_wallet_address", "").strip(),
         "bch_wallet_address": rows.get("bch_wallet_address", "").strip(),
+        "bch_solopool_address": rows.get("bch_solopool_address", "").strip(),
     }
 
 
@@ -1474,6 +1482,9 @@ async def collector():
                 if old and old.best_share and t.best_share and t.best_share != old.best_share:
                     await manager.broadcast({"type":"best_share","miner_id":miner["id"],"miner_name":miner["name"],"value":t.best_share})
                 await reconcile_block_claim(miner, t)
+                pool_url, _pool_user = _telemetry_pool_identity(t)
+                if pool_url and "solopool.org" not in pool_url.lower():
+                    with db() as c: c.execute("UPDATE pool_block_claims SET active=0 WHERE miner_id=?", (miner["id"],))
                 previous[miner["id"]] = t
                 latest_telemetry[miner["id"]] = t
                 await manager.broadcast({"type":"telemetry","miner_id":miner["id"]})
@@ -1489,6 +1500,7 @@ async def startup():
     asyncio.create_task(block_watcher())
     asyncio.create_task(network_watcher())
     asyncio.create_task(bch_watcher())
+    asyncio.create_task(solopool_watcher())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1554,8 +1566,10 @@ def miners_get():
             m["shares_today"]=derive_today_shares(m["id"],ca); m["shares_session"]=derive_session_shares(m["id"],ca); m["shares_lifetime"]=ca
             m["reject_pct"]=(cr/(ca+cr)*100.0) if ca is not None and cr is not None and (ca+cr)>0 else None
             claim = c.execute("SELECT found_count,found_at,active FROM block_claims WHERE miner_id=?", (m["id"],)).fetchone()
-            m["block_found"] = bool(claim and claim["active"])
-            m["block_found_at"] = claim["found_at"] if claim else None
+            pool_claim = c.execute("SELECT found_at,active,block_height,block_hash FROM pool_block_claims WHERE miner_id=?", (m["id"],)).fetchone()
+            m["block_found"] = bool((claim and claim["active"]) or (pool_claim and pool_claim["active"]))
+            m["block_found_at"] = pool_claim["found_at"] if pool_claim and pool_claim["active"] else (claim["found_at"] if claim else None)
+            m["block_found_height"] = pool_claim["block_height"] if pool_claim else None
             m["found_blocks"] = claim["found_count"] if claim else (m["telemetry"] or {}).get("found_blocks")
             out.append(m)
     return out
@@ -2154,6 +2168,60 @@ async def bch_watcher():
             latest_wallets = {**latest_wallets, "error": str(e), "updated_at": int(time.time())}
         await asyncio.sleep(60)
 
+def _telemetry_pool_identity(t: Telemetry | None) -> tuple[str, str]:
+    raw = (t.raw or {}) if t else {}
+    primary = raw.get("primary_pool") if isinstance(raw, dict) else None
+    if not isinstance(primary, dict): primary = {}
+    url = str(primary.get("displayURL") or primary.get("URL") or primary.get("url") or primary.get("stratumURL") or raw.get("stratumURL") or "")
+    user = str(primary.get("User") or primary.get("user") or primary.get("stratumUser") or raw.get("stratumUser") or "")
+    return url, user
+
+def _solopool_address(value: str) -> str:
+    address = (value or "").strip().split(".", 1)[0]
+    return re.sub(r"^bitcoincash:", "", address, flags=re.I)
+
+async def solopool_watcher():
+    while True:
+        try:
+            cfg = get_customization()
+            addresses = set()
+            configured = _solopool_address(cfg.get("bch_solopool_address", ""))
+            if configured: addresses.add(configured)
+            with db() as c: miner_rows = list(c.execute("SELECT * FROM miners ORDER BY id"))
+            for miner in miner_rows:
+                url, user = _telemetry_pool_identity(latest_telemetry.get(miner["id"]))
+                if "solopool.org" in url.lower() and user:
+                    addresses.add(_solopool_address(user))
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.0)) as client:
+                for address in addresses:
+                    response = await client.get(f"https://bch.solopool.org/api/miners/{address}")
+                    response.raise_for_status(); data = response.json(); blocks = data.get("blocks") or []
+                    if not blocks: continue
+                    block = max(blocks, key=lambda b: int(b.get("timestamp") or 0)); worker = str(block.get("worker") or "").strip()
+                    winner = None
+                    for miner in miner_rows:
+                        _url, pool_user = _telemetry_pool_identity(latest_telemetry.get(miner["id"]))
+                        worker_from_user = pool_user.rsplit(".",1)[-1] if "." in pool_user else ""
+                        if worker and (str(miner["name"]).lower() == worker.lower() or worker_from_user.lower() == worker.lower()):
+                            winner = miner; break
+                    if winner is None: continue
+                    block_hash = str(block.get("hash") or block.get("tx") or "")
+                    with db() as c:
+                        old = c.execute("SELECT block_hash FROM pool_block_claims WHERE miner_id=?", (winner["id"],)).fetchone()
+                        is_new = not old or old["block_hash"] != block_hash
+                        c.execute("""INSERT INTO pool_block_claims(miner_id,pool_address,block_hash,block_height,found_at,active)
+                                     VALUES(?,?,?,?,?,1) ON CONFLICT(miner_id) DO UPDATE SET
+                                     pool_address=excluded.pool_address,block_hash=excluded.block_hash,
+                                     block_height=excluded.block_height,found_at=excluded.found_at,active=1""",
+                                  (winner["id"], address, block_hash, block.get("height"), block.get("timestamp")))
+                    if is_new:
+                        details = {"source":"bch.solopool.org","pool_address":address,"worker":worker,"hash":block_hash,"height":block.get("height"),"share_diff":block.get("shareDiff"),"reward":block.get("minerReward"),"algorithm":winner["algorithm"]}
+                        record_event(winner["id"], "block_found", value_text=str(block.get("height") or ""), details=details)
+                        await manager.broadcast({"type":"block_found","miner_id":winner["id"],"miner_name":winner["name"],"algorithm":winner["algorithm"],"worker":worker,"height":block.get("height"),"share_diff":block.get("shareDiff"),"ts":block.get("timestamp")})
+        except Exception:
+            pass
+        await asyncio.sleep(20)
+
 
 async def block_watcher():
     global latest_block
@@ -2322,9 +2390,11 @@ def events(limit:int=100, miner_id:int|None=None):
 @app.get("/api/block-found/latest")
 def latest_block_found_event():
     with db() as c:
-        row = c.execute("""SELECT e.*,m.name AS miner_name,m.algorithm,COALESCE(b.active,0) AS active FROM events e
+        row = c.execute("""SELECT e.*,m.name AS miner_name,m.algorithm,
+                           CASE WHEN COALESCE(b.active,0)=1 OR COALESCE(p.active,0)=1 THEN 1 ELSE 0 END AS active FROM events e
                            LEFT JOIN miners m ON m.id=e.miner_id
                            LEFT JOIN block_claims b ON b.miner_id=e.miner_id
+                           LEFT JOIN pool_block_claims p ON p.miner_id=e.miner_id
                            WHERE e.event_type='block_found' ORDER BY e.ts DESC LIMIT 1""").fetchone()
     if not row:
         return {"available": False}
@@ -2730,6 +2800,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input id="cCompact" type="checkbox"> Compact miner cards</label>
 <div class="field"><label>Bitcoin block API base URL</label><input id="cBlockApi" value="https://mempool.space/api"><div class="sub">Default uses mempool.space. Later this can point at a compatible local Mempool/Bitcoin service on Umbrel.</div></div>
 <div class="row"><div class="field"><label>BTC public wallet address (optional)</label><input id="cBtcWallet" placeholder="bc1…"><div class="sub">Watch-only balance. Never enter a seed phrase or private key.</div></div><div class="field"><label>BCH public wallet address (optional)</label><input id="cBchWallet" placeholder="bitcoincash:q…"><div class="sub">Watch-only balance. Never enter a seed phrase or private key.</div></div></div>
+<div class="field"><label>BCH SoloPool public mining address (optional)</label><input id="cBchSoloPool" placeholder="q…"><div class="sub">Used for pool-side block detection. RigPulse also auto-detects this from SoloPool worker usernames when firmware reports them.</div></div>
 <div class="actions"><button class="btn" onclick="resetCustomization()">Reset</button><button class="btn primary" onclick="saveCustomization()">Save Appearance</button></div>
 </div></div>
 
@@ -2785,7 +2856,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 </div>
 </div></div>
 <script>
-let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:""}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
+let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:"",bch_solopool_address:""}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
 const $=id=>document.getElementById(id);
 function fmt(v,d=1){return v==null?'--':Number(v).toFixed(d)}
 
@@ -2996,7 +3067,7 @@ function previewCustomization(){
  const c={
   theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),
   background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,
-  block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim()
+  block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim()
  };
  $('cOpacityVal').textContent=Math.round(c.card_opacity*100)+'%';
  $('cBlurVal').textContent=c.blur_px+'px'; $('cIntensityVal').textContent=c.background_intensity.toFixed(1)+'x';
@@ -3008,15 +3079,15 @@ function chooseBackground(theme){$('cTheme').value=theme;previewCustomization()}
 async function openCustomization(){
  customization=await fetch('/api/customization').then(r=>r.json());
  $('cTheme').value=customization.theme;$('cOpacity').value=customization.card_opacity;$('cBlur').value=customization.blur_px;
- $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';
+ $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';$('cBchSoloPool').value=customization.bch_solopool_address||'';
  previewCustomization();$('customModal').classList.add('show');
 }
 function closeCustomization(){$('customModal').classList.remove('show');applyCustomization(customization)}
 function resetCustomization(){
- $('cTheme').value='midnight';$('cOpacity').value=.82;$('cBlur').value=14;$('cIntensity').value=1;$('cCompact').checked=false;$('cBlockApi').value='https://mempool.space/api';$('cBtcWallet').value='';$('cBchWallet').value='';previewCustomization();
+ $('cTheme').value='midnight';$('cOpacity').value=.82;$('cBlur').value=14;$('cIntensity').value=1;$('cCompact').checked=false;$('cBlockApi').value='https://mempool.space/api';$('cBtcWallet').value='';$('cBchWallet').value='';$('cBchSoloPool').value='';previewCustomization();
 }
 async function saveCustomization(){
- const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim()};
+ const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim()};
  const r=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
  if(!r.ok){toast('Could not save customization');return}
  customization=await r.json();applyCustomization(customization);$('customModal').classList.remove('show');toast('Appearance saved');setTimeout(loadBlockStatus,500);
