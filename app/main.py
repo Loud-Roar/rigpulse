@@ -134,7 +134,7 @@ latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
-app = FastAPI(title="RigPulse", version="0.4.2")
+app = FastAPI(title="RigPulse", version="0.4.3")
 
 
 def db():
@@ -1237,6 +1237,26 @@ async def http_probe(ip: str, algorithm: str, family: str) -> Telemetry | None:
                                 )
                                 if (family == "axeos" and path == "/api/system/info") or axeos_signature:
                                     t = parse_axeos(data)
+                                    # AxeOS keeps individual share difficulty records in
+                                    # its scoreboard. The entry with the lowest age is the
+                                    # newest share currently retained by the firmware.
+                                    try:
+                                        sr = await client.get(f"{scheme}://{ip}/api/system/scoreboard")
+                                        if sr.status_code < 400:
+                                            scoreboard = sr.json()
+                                            if isinstance(scoreboard, dict):
+                                                scoreboard = scoreboard.get("scoreboard") or scoreboard.get("data") or []
+                                            entries = [x for x in scoreboard if isinstance(x, dict)] if isinstance(scoreboard, list) else []
+                                            newest = min(
+                                                (x for x in entries if num(x.get("difficulty")) is not None and num(x.get("since")) is not None),
+                                                key=lambda x: num(x.get("since")),
+                                                default=None,
+                                            )
+                                            if newest is not None:
+                                                t.current_share = str(newest["difficulty"])
+                                                t.raw = {**(t.raw or {}), "latest_scoreboard_share": newest}
+                                    except Exception:
+                                        pass
                                     t.raw = {"endpoint": path, **(t.raw or {})}
                                     return t
                                 if family == "iceriver" and path.startswith("/user/"):
@@ -1404,7 +1424,8 @@ def enrich_share_telemetry(t: Telemetry) -> Telemetry:
         primary = {}
     pool_url = primary.get("displayURL") or primary.get("URL") or primary.get("url") or primary.get("stratumURL") or raw.get("stratumURL")
     pool_user = primary.get("User") or primary.get("user") or primary.get("stratumUser") or raw.get("stratumUser")
-    t.current_share = str(current) if current not in (None, "") else None
+    if current not in (None, ""):
+        t.current_share = str(current)
     t.found_blocks = max(0, int(found)) if found is not None else None
     t.pool_key = f"{pool_url or ''}|{pool_user or ''}" if pool_url or pool_user else None
     return t
@@ -1681,7 +1702,7 @@ async def miner_diagnostics(miner_id: int):
     # Common read-only miner endpoints. We record status/content type and a short
     # response preview, but never submit settings or credentials.
     paths = [
-        "/", "/api/system/info", "/api/system", "/api/info",
+        "/", "/api/system/info", "/api/system/scoreboard", "/api/system", "/api/info",
         "/api/user/overview", "/api/overview", "/api/status",
         "/api/v1/status", "/api/v1/system", "/api/v1/summary",
         "/mcb/cgminer?cgminercmd=summary",
@@ -2878,7 +2899,7 @@ const $=id=>document.getElementById(id);
 function fmt(v,d=1){return v==null?'--':Number(v).toFixed(d)}
 
 function shareNumber(v){if(v==null||v==='')return null;let s=String(v).trim().replace(/,/g,''),m=s.match(/^(-?\d+(?:\.\d+)?)\s*([kKmMgGtTpPeE]?)$/);if(!m){let n=Number(s);return Number.isFinite(n)?n:null}let mult={'':1,K:1e3,M:1e6,G:1e9,T:1e12,P:1e15,E:1e18}[m[2].toUpperCase()]||1;return Number(m[1])*mult}
-function fmtShare(v){let n=shareNumber(v);if(n==null)return'--';let a=Math.abs(n),units=[['E',1e18],['P',1e15],['T',1e12],['G',1e9],['M',1e6],['K',1e3]];for(const [u,m] of units)if(a>=m){let x=n/m;return (x>=100?x.toFixed(1):x>=10?x.toFixed(2):x.toFixed(3)).replace(/\.?0+$/,'')+u}return Math.round(n).toLocaleString()}
+function fmtShare(v){let n=shareNumber(v);if(n==null)return'--';let a=Math.abs(n),units=[['E',1e18],['P',1e15],['T',1e12],['G',1e9],['M',1e6],['K',1e3]];for(const [u,m] of units)if(a>=m){let x=n/m;return x.toFixed(2).replace(/0$/,'')+u}return n.toFixed(1)}
 
 function canonicalHash(t,algorithm){
  if(!t||t.hashrate==null)return {value:null,unit:''};
@@ -3195,7 +3216,7 @@ async function openNetwork(){
 function closeNetwork(){$('networkModal').classList.remove('show')}
 function applyFleetBestRing(){document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]);card.classList.toggle('fleet-best',id===fleetBestMinerId)})}
 async function refreshFleetBestRing(){try{const s=await fetch('/api/fleet-summary').then(r=>r.json());fleetBestMinerId=s.fleet_best?.miner_id??null;applyFleetBestRing()}catch(e){}}
-function stabilizeMinerCards(){applyFleetBestRing();document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]),m=miners.find(x=>x.id===id),spark=$(`spark-${id}`);if(spark&&sparkCache.has(id))spark.innerHTML=sparkCache.get(id);card.classList.toggle('block-winner',!!m?.block_found);if(m?.block_found&&!card.querySelector('.block-found-badge'))card.insertAdjacentHTML('afterbegin','<div class="block-found-badge">⛏ BLOCK FOUND</div>');if(!m?.block_found)card.querySelector('.block-found-badge')?.remove();const stats=card.querySelector('.stats');if(stats&&!stats.querySelector('.current-share-stat'))stats.children[3]?.insertAdjacentHTML('afterend',`<div class="current-share-stat"><span>Current Shares</span><b>${m?.telemetry?.accepted!=null?Number(m.telemetry.accepted).toLocaleString():'--'}</b></div>`);if(stats&&!stats.querySelector('.fan-stat'))stats.insertAdjacentHTML('beforeend',`<div class="fan-stat"><span>Fan Speed</span><b>${m?.telemetry?.fan_rpm!=null?fmt(m.telemetry.fan_rpm,0)+' RPM':'--'}</b></div>`)})}
+function stabilizeMinerCards(){applyFleetBestRing();document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]),m=miners.find(x=>x.id===id),spark=$(`spark-${id}`);if(spark&&sparkCache.has(id))spark.innerHTML=sparkCache.get(id);card.classList.toggle('block-winner',!!m?.block_found);if(m?.block_found&&!card.querySelector('.block-found-badge'))card.insertAdjacentHTML('afterbegin','<div class="block-found-badge">⛏ BLOCK FOUND</div>');if(!m?.block_found)card.querySelector('.block-found-badge')?.remove();const stats=card.querySelector('.stats');if(stats&&!stats.querySelector('.current-share-stat'))stats.children[3]?.insertAdjacentHTML('afterend',`<div class="current-share-stat"><span>Current Share</span><b>${fmtShare(m?.telemetry?.current_share)}</b></div>`);if(stats&&!stats.querySelector('.fan-stat'))stats.insertAdjacentHTML('beforeend',`<div class="fan-stat"><span>Fan Speed</span><b>${m?.telemetry?.fan_rpm!=null?fmt(m.telemetry.fan_rpm,0)+' RPM':'--'}</b></div>`)})}
 new MutationObserver(()=>requestAnimationFrame(stabilizeMinerCards)).observe($('miners'),{childList:true});
 function connectWS(){
  let proto=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(`${proto}://${location.host}/ws`);
