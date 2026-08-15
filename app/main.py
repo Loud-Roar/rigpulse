@@ -56,6 +56,9 @@ class Telemetry:
     accepted: int | None = None
     rejected: int | None = None
     best_share: str | None = None
+    current_share: str | None = None
+    found_blocks: int | None = None
+    pool_key: str | None = None
     pool_alive: bool | None = None
     uptime_s: int | None = None
     fan_rpm: int | None = None
@@ -97,6 +100,8 @@ class CustomizationIn(BaseModel):
     background_intensity: float = Field(default=1.0, ge=0.2, le=2.0)
     compact_cards: bool = False
     block_api_base: str = "https://mempool.space/api"
+    btc_wallet_address: str = ""
+    bch_wallet_address: str = ""
 
 
 class WSManager:
@@ -125,7 +130,9 @@ manager = WSManager()
 latest_telemetry: dict[int, Telemetry] = {}
 latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
-app = FastAPI(title="RigPulse", version="0.3.9")
+latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
+latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
+app = FastAPI(title="RigPulse", version="0.4.0")
 
 
 def db():
@@ -176,6 +183,11 @@ def init_db():
             miner_id INTEGER PRIMARY KEY, accepted INTEGER, rejected INTEGER, started_at INTEGER NOT NULL,
             FOREIGN KEY(miner_id) REFERENCES miners(id)
         );
+        CREATE TABLE IF NOT EXISTS block_claims (
+            miner_id INTEGER PRIMARY KEY, found_count INTEGER NOT NULL DEFAULT 0,
+            pool_key TEXT NOT NULL DEFAULT '', found_at INTEGER, active INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(miner_id) REFERENCES miners(id)
+        );
         """)
         defaults = {
             "share_emoji": "🎉",
@@ -190,6 +202,8 @@ def init_db():
             "background_intensity": "1.0",
             "compact_cards": "false",
             "block_api_base": "https://mempool.space/api",
+            "btc_wallet_address": "",
+            "bch_wallet_address": "",
         }
         for k,v in defaults.items():
             c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k,v))
@@ -219,6 +233,8 @@ def get_customization():
         "background_intensity": float(rows.get("background_intensity", "1.0")),
         "compact_cards": rows.get("compact_cards", "false") == "true",
         "block_api_base": rows.get("block_api_base", "https://mempool.space/api").rstrip("/"),
+        "btc_wallet_address": rows.get("btc_wallet_address", "").strip(),
+        "bch_wallet_address": rows.get("bch_wallet_address", "").strip(),
     }
 
 
@@ -1365,6 +1381,56 @@ def record_event(miner_id: int | None, event_type: str, value_text: str | None =
     with db() as c:
         c.execute("INSERT INTO events(miner_id,ts,event_type,value_text,value_num,details) VALUES(?,?,?,?,?,?)", (miner_id,int(time.time()),event_type,value_text,value_num,json.dumps(details or {},separators=(",",":"))))
 
+def enrich_share_telemetry(t: Telemetry) -> Telemetry:
+    raw = t.raw or {}
+    current = find_value(raw, [
+        "current_share", "currentshare", "last_share_difficulty", "lastsharedifficulty",
+        "last_share_diff", "lastsharediff", "last_diff", "lastdiff", "current_diff", "Last Share Difficulty", "Last Share Diff"
+    ])
+    found = find_number(raw, [
+        "found_blocks", "foundblocks", "blocks_found", "blocksfound", "block_found", "blockfound", "Found Blocks"
+    ])
+    primary = raw.get("primary_pool") if isinstance(raw, dict) else None
+    if not isinstance(primary, dict):
+        primary = {}
+    pool_url = primary.get("displayURL") or primary.get("URL") or primary.get("url") or primary.get("stratumURL") or raw.get("stratumURL")
+    pool_user = primary.get("User") or primary.get("user") or primary.get("stratumUser") or raw.get("stratumUser")
+    t.current_share = str(current) if current not in (None, "") else None
+    t.found_blocks = max(0, int(found)) if found is not None else None
+    t.pool_key = f"{pool_url or ''}|{pool_user or ''}" if pool_url or pool_user else None
+    return t
+
+async def reconcile_block_claim(miner: sqlite3.Row, t: Telemetry):
+    if t.found_blocks is None:
+        return
+    now = int(time.time())
+    with db() as c:
+        row = c.execute("SELECT * FROM block_claims WHERE miner_id=?", (miner["id"],)).fetchone()
+        old_count = int(row["found_count"]) if row else 0
+        old_pool = str(row["pool_key"] or "") if row else ""
+        new_pool = t.pool_key or old_pool
+        pool_changed = bool(row and old_pool and t.pool_key and old_pool != t.pool_key)
+        reset = bool(row and t.found_blocks < old_count)
+        is_new = t.found_blocks > 0 and (row is None or (not pool_changed and not reset and t.found_blocks > old_count))
+        if pool_changed or reset or t.found_blocks == 0:
+            active = 0
+            found_at = None
+        elif is_new:
+            active = 1
+            found_at = now
+        else:
+            active = int(row["active"]) if row else 0
+            found_at = row["found_at"] if row else None
+        c.execute("""INSERT INTO block_claims(miner_id,found_count,pool_key,found_at,active)
+                     VALUES(?,?,?,?,?) ON CONFLICT(miner_id) DO UPDATE SET
+                     found_count=excluded.found_count,pool_key=excluded.pool_key,
+                     found_at=excluded.found_at,active=excluded.active""",
+                  (miner["id"], t.found_blocks, new_pool, found_at, active))
+    if is_new:
+        details = {"found_count": t.found_blocks, "pool_key": new_pool, "algorithm": miner["algorithm"]}
+        record_event(miner["id"], "block_found", value_text=str(t.found_blocks), details=details)
+        await manager.broadcast({"type":"block_found","miner_id":miner["id"],"miner_name":miner["name"],"algorithm":miner["algorithm"],"found_count":t.found_blocks,"ts":now})
+
 def ensure_session_baseline(miner_id:int, accepted:int|None, rejected:int|None):
     with db() as c:
         if c.execute("SELECT 1 FROM session_baselines WHERE miner_id=?",(miner_id,)).fetchone() is None:
@@ -1391,7 +1457,7 @@ async def collector():
             with db() as c:
                 miners = list(c.execute("SELECT * FROM miners ORDER BY id"))
             for miner in miners:
-                t = await poll_miner(miner)
+                t = enrich_share_telemetry(await poll_miner(miner))
                 ts = int(time.time())
                 with db() as c:
                     c.execute("""INSERT INTO samples(miner_id,ts,hashrate,hashrate_unit,temp_c,power_w,accepted,rejected,best_share,online)
@@ -1407,6 +1473,7 @@ async def collector():
                     await manager.broadcast({"type":"share","miner_id":miner["id"],"miner_name":miner["name"],"algorithm":miner["algorithm"],"count":delta})
                 if old and old.best_share and t.best_share and t.best_share != old.best_share:
                     await manager.broadcast({"type":"best_share","miner_id":miner["id"],"miner_name":miner["name"],"value":t.best_share})
+                await reconcile_block_claim(miner, t)
                 previous[miner["id"]] = t
                 latest_telemetry[miner["id"]] = t
                 await manager.broadcast({"type":"telemetry","miner_id":miner["id"]})
@@ -1421,6 +1488,7 @@ async def startup():
     asyncio.create_task(collector())
     asyncio.create_task(block_watcher())
     asyncio.create_task(network_watcher())
+    asyncio.create_task(bch_watcher())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1485,6 +1553,10 @@ def miners_get():
             ca=(m["telemetry"] or {}).get("accepted"); cr=(m["telemetry"] or {}).get("rejected")
             m["shares_today"]=derive_today_shares(m["id"],ca); m["shares_session"]=derive_session_shares(m["id"],ca); m["shares_lifetime"]=ca
             m["reject_pct"]=(cr/(ca+cr)*100.0) if ca is not None and cr is not None and (ca+cr)>0 else None
+            claim = c.execute("SELECT found_count,found_at,active FROM block_claims WHERE miner_id=?", (m["id"],)).fetchone()
+            m["block_found"] = bool(claim and claim["active"])
+            m["block_found_at"] = claim["found_at"] if claim else None
+            m["found_blocks"] = claim["found_count"] if claim else (m["telemetry"] or {}).get("found_blocks")
             out.append(m)
     return out
 
@@ -1939,6 +2011,10 @@ def customization_put(body: CustomizationIn):
 def block_status():
     return latest_block
 
+@app.get("/api/chain-status")
+def chain_status():
+    return {"btc": latest_block, "bch": latest_bch, "wallets": latest_wallets}
+
 
 
 def _safe_float(v):
@@ -2038,6 +2114,45 @@ async def network_watcher():
                     "updated_at": int(time.time()),
                 }
         await asyncio.sleep(30)
+
+async def bch_watcher():
+    global latest_bch, latest_wallets
+    while True:
+        try:
+            cfg = get_customization()
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.0)) as client:
+                rs = await client.get("https://api.blockchair.com/bitcoin-cash/stats")
+                rs.raise_for_status()
+                stats = rs.json().get("data") or {}
+                latest_bch = {
+                    "available": True, "source": "api.blockchair.com",
+                    "height": stats.get("blocks"), "hash": stats.get("best_block_hash"),
+                    "timestamp": stats.get("best_block_time"), "difficulty": stats.get("difficulty"),
+                    "transactions_24h": stats.get("transactions_24h"),
+                    "mempool_transactions": stats.get("mempool_transactions"),
+                    "updated_at": int(time.time()),
+                }
+                wallets = {"btc": None, "bch": None, "updated_at": int(time.time())}
+                btc_address = cfg.get("btc_wallet_address", "")
+                if btc_address:
+                    rb = await client.get(cfg.get("block_api_base", "https://mempool.space/api").rstrip("/") + "/address/" + btc_address)
+                    rb.raise_for_status()
+                    a = rb.json(); chain = a.get("chain_stats") or {}; mem = a.get("mempool_stats") or {}
+                    sats = (chain.get("funded_txo_sum",0)-chain.get("spent_txo_sum",0)) + (mem.get("funded_txo_sum",0)-mem.get("spent_txo_sum",0))
+                    wallets["btc"] = {"address": btc_address, "balance": sats / 100_000_000, "unit": "BTC"}
+                bch_address = cfg.get("bch_wallet_address", "")
+                if bch_address:
+                    rw = await client.get("https://api.blockchair.com/bitcoin-cash/dashboards/address/" + bch_address)
+                    rw.raise_for_status()
+                    data = rw.json().get("data") or {}; entry = data.get(bch_address) or next(iter(data.values()), {})
+                    sats = ((entry or {}).get("address") or {}).get("balance")
+                    wallets["bch"] = {"address": bch_address, "balance": (float(sats)/100_000_000) if sats is not None else None, "unit": "BCH"}
+                latest_wallets = wallets
+        except Exception as e:
+            if not latest_bch.get("available"):
+                latest_bch = {"available": False, "source": "api.blockchair.com", "error": str(e), "updated_at": int(time.time())}
+            latest_wallets = {**latest_wallets, "error": str(e), "updated_at": int(time.time())}
+        await asyncio.sleep(60)
 
 
 async def block_watcher():
@@ -2202,6 +2317,21 @@ def events(limit:int=100, miner_id:int|None=None):
         try:d["details"]=json.loads(d.get("details") or "{}")
         except:pass
         out.append(d)
+    return out
+
+@app.get("/api/block-found/latest")
+def latest_block_found_event():
+    with db() as c:
+        row = c.execute("""SELECT e.*,m.name AS miner_name,m.algorithm,COALESCE(b.active,0) AS active FROM events e
+                           LEFT JOIN miners m ON m.id=e.miner_id
+                           LEFT JOIN block_claims b ON b.miner_id=e.miner_id
+                           WHERE e.event_type='block_found' ORDER BY e.ts DESC LIMIT 1""").fetchone()
+    if not row:
+        return {"available": False}
+    out = dict(row)
+    try: out["details"] = json.loads(out.get("details") or "{}")
+    except Exception: out["details"] = {}
+    out["available"] = True
     return out
 
 @app.get("/api/fleet-summary")
@@ -2446,13 +2576,15 @@ button,input,select{font:inherit}
 @media(max-width:700px){.alert-grid{grid-template-columns:1fr}}
 .event-table{width:100%;border-collapse:collapse}.event-table td,.event-table th{padding:8px;border-bottom:1px solid #172a40;text-align:left;font-size:12px}.event-table th{color:#8da0b8}.clickable{cursor:pointer}.sort-select{background:#0d1827;color:white;border:1px solid #22354a;padding:9px 12px;border-radius:10px}@media(max-width:800px){.detail-grid{grid-template-columns:repeat(2,1fr)}}
 
-.block-strip{margin-top:12px;padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center;overflow:hidden;position:relative}
+.chain-strips{display:grid;grid-template-columns:1fr 1fr;gap:10px}.block-strip{margin-top:12px;padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center;overflow:hidden;position:relative;min-width:0}.wallet-strip{margin-top:10px;padding:10px 14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}.wallet-item{color:#8fa4bb;font-size:11px}.wallet-item b{color:#fff;font-size:14px;margin-left:5px}
 .block-strip::after{content:"";position:absolute;inset:auto -10% -80% auto;width:240px;height:180px;background:radial-gradient(circle,rgba(247,147,26,.16),transparent 65%);pointer-events:none}
 .block-icon{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;font-size:25px;background:rgba(247,147,26,.12);border:1px solid rgba(247,147,26,.35)}
 .block-main{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.block-height{font-size:23px;font-weight:900}.block-hash{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:#8fa4bb;font-size:11px}
 .block-meta{display:flex;gap:16px;color:#91a4bb;font-size:12px;flex-wrap:wrap}.block-meta b{color:#fff}
 .block-pulse{animation:blockPulse 1.8s ease}
 @keyframes blockPulse{0%{box-shadow:0 0 0 0 rgba(247,147,26,.65)}100%{box-shadow:0 0 0 30px rgba(247,147,26,0)}}
+.miner.block-winner{border-color:#ffd84d;box-shadow:0 0 18px rgba(255,190,30,.38)}.block-found-badge{position:absolute;z-index:4;left:12px;top:-10px;background:#5b2500;border:1px solid #ffcf40;color:#fff1a8;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:900}.card-confetti{position:absolute;z-index:5;pointer-events:none;font-size:14px;animation:cardConfetti 1.8s linear forwards}@keyframes cardConfetti{from{transform:translateY(-20px) rotate(0);opacity:1}to{transform:translateY(210px) rotate(500deg);opacity:0}}
+.block-party{z-index:100;background:rgba(0,0,0,.88)}.block-party-panel{text-align:center;max-width:620px;background:radial-gradient(circle at 50% 0,rgba(255,190,30,.28),rgba(7,17,29,.99) 58%)}.block-party-title{font-size:clamp(38px,8vw,78px);font-weight:1000;color:#ffd84d;text-shadow:0 0 22px rgba(255,190,30,.6);line-height:1}.block-party-miner{font-size:25px;font-weight:800;margin-top:14px}
 .custom-preview{min-height:142px;border-radius:13px;border:1px solid rgba(var(--accent-rgb),.28);background:linear-gradient(135deg,rgba(var(--accent-rgb),.18),rgba(5,12,22,.45));padding:16px;display:flex;align-items:center;overflow:hidden}
 .custom-preview-card{width:min(430px,72%);min-height:86px;border-radius:12px;background:rgba(8,20,34,var(--card-opacity));border:1px solid rgba(var(--accent-rgb),.3);backdrop-filter:blur(var(--glass-blur));padding:12px;display:flex;flex-direction:column;justify-content:center}.custom-preview-card .hash{font-size:22px;margin:7px 0 0;line-height:1.15}
 .range-row{display:grid;grid-template-columns:1fr 70px;gap:10px;align-items:center}
@@ -2492,10 +2624,10 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
  .main{padding:9px 8px 35px}.top{margin-bottom:8px;gap:8px}.top h1{font-size:19px}.top>div{display:flex;gap:5px}.top .pill,.top .btn{padding:7px 9px;font-size:11px}
  .health-banner{margin:6px 0 8px;padding:7px 9px}.metrics{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
  .metric{padding:9px 8px;min-height:78px}.metric .label{font-size:9px}.metric .value{font-size:17px;margin-top:4px;line-height:1.1}.metric .sub{font-size:9px;line-height:1.1}
- .block-strip{padding:9px;grid-template-columns:auto 1fr;gap:8px}.block-icon{width:34px;height:34px;font-size:19px}.block-height{font-size:16px}.block-hash{display:none}.block-meta{gap:5px 10px;font-size:9px}.block-meta span:nth-child(3),.block-meta span:nth-child(5){display:none}.block-strip>#blockState{position:absolute;right:8px;top:8px;font-size:9px}
+ .chain-strips{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.block-strip{padding:8px;grid-template-columns:1fr;gap:5px}.block-icon{width:30px;height:30px;font-size:17px}.block-height{font-size:13px}.block-hash{display:none}.block-meta{gap:4px 7px;font-size:8px}.block-meta span:nth-child(2),.block-meta span:nth-child(3),.block-meta span:nth-child(5){display:none}.block-strip>.status{position:absolute;right:6px;top:6px;font-size:7px}.wallet-strip{padding:8px;gap:8px}.wallet-item{font-size:9px}.wallet-item b{font-size:11px}
  .stream{padding:9px;margin-top:8px}.stream-row{min-height:36px;gap:10px}.stream-item{min-width:42px;font-size:20px}
  .toolbar{gap:5px;margin:9px 0;overflow-x:auto;flex-wrap:nowrap;scrollbar-width:none}.toolbar::-webkit-scrollbar{display:none}.toolbar .pill{flex:0 0 auto;padding:7px 9px;font-size:10px}.toolbar .spacer{display:none}.sort-select{flex:0 0 auto;padding:7px;font-size:10px}.toolbar #onlineCount{flex:0 0 auto;font-size:10px;white-space:nowrap}
- .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.miner{padding:9px;min-width:0}.miner-head{display:block}.miner h3{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px}.miner .status{font-size:9px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.miner .sub{font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.miner .hash{font-size:19px;margin:7px 0 3px;white-space:nowrap}.miner .spark{height:21px;margin:1px 0 5px}.miner .spark svg{height:21px!important}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding-top:6px}.stats span{font-size:7px}.stats b{font-size:10px;overflow-wrap:anywhere}.stats>div:nth-child(3),.stats>div:nth-child(5),.stats>div:nth-child(6),.stats>div:nth-child(7){display:none}
+ .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.miner{padding:9px;min-width:0}.miner-head{display:block}.miner h3{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px}.miner .status{font-size:9px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.miner .sub{font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.miner .hash{font-size:19px;margin:7px 0 3px;white-space:nowrap}.miner .spark{height:21px;margin:1px 0 5px}.miner .spark svg{height:21px!important}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding-top:6px}.stats span{font-size:7px}.stats b{font-size:10px;overflow-wrap:anywhere}.stats>div:nth-child(3),.stats>div:nth-child(6),.stats>div:nth-child(7),.stats>div:nth-child(8){display:none}
  .miner.fleet-best::after{right:7px;top:-8px;padding:2px 5px;font-size:8px}.miner>div:last-child{margin-top:6px!important;display:block!important;text-align:right}.miner>div:last-child small{display:none}.miner>div:last-child .btn{padding:4px 5px!important;font-size:8px!important}
  .modal{padding:7px;align-items:flex-end}.dialog{padding:14px;width:100%!important;max-height:94dvh!important;border-radius:16px 16px 8px 8px!important}.dialog h2{font-size:20px}.row{display:grid;grid-template-columns:1fr}.actions{position:sticky;bottom:-14px;background:rgba(5,14,25,.96);padding:9px 0 14px;margin-top:12px}
  .detail-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.detail-stat{padding:8px}.detail-stat small{font-size:9px}.detail-stat b{font-size:13px}.chart-canvas{height:145px}.chart-wrap{padding:7px;margin-top:8px}
@@ -2517,7 +2649,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
   </div>
 </aside>
 <main class="main">
-  <div class="top"><h1>Fleet Dashboard</h1><div><button class="pill" onclick="openSettings()" id="emojiBtn">🎉 Emoji</button> <button class="btn primary" onclick="openAdd()">+ Add Miner</button></div></div>
+  <div class="top"><h1>Fleet Dashboard</h1><div><button class="pill" id="replayBlockBtn" onclick="replayLastBlock()" style="display:none">🎊 Replay Block</button> <button class="pill" onclick="openSettings()" id="emojiBtn">🎉 Emoji</button> <button class="btn primary" onclick="openAdd()">+ Add Miner</button></div></div>
   <div id="healthBanner" class="health-banner"><div class="health-dot">●</div><div><div class="health-title">Fleet Health</div><div class="health-detail">Checking miners…</div></div></div>
   <section class="metrics">
     <div class="card metric"><div class="label">SHA-256 Hashrate</div><div class="value blue" id="shaHash">--</div><div class="sub" id="shaCount"></div></div>
@@ -2527,14 +2659,17 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
     <div class="card metric"><div class="label">Known Power</div><div class="value" id="power">--</div><div class="sub" id="unknownPower"></div></div>
     <div class="card metric"><div class="label">Fleet Best Share</div><div class="value green" id="fleetBestShare">--</div><div class="sub" id="fleetBestMiner">No reported best share</div></div>
   </section>
-  <section class="card block-strip" id="blockStrip">
+  <div class="chain-strips"><section class="card block-strip" id="blockStrip">
     <div class="block-icon">₿</div>
     <div>
       <div class="block-main"><span class="block-height" id="blockHeight">Bitcoin block —</span><span class="block-hash" id="blockHash">waiting for network…</span></div>
       <div class="block-meta"><span>Age <b id="blockAge">—</b></span><span>Transactions <b id="blockTx">—</b></span><span>Size <b id="blockSize">—</b></span><span>Difficulty <b id="blockDifficulty">—</b></span><span>Source <b id="blockSource">mempool.space</b></span></div>
     </div>
     <div class="status green" id="blockState">● LIVE</div>
-  </section>
+  </section><section class="card block-strip" id="bchBlockStrip">
+    <div class="block-icon">₿</div><div><div class="block-main"><span class="block-height" id="bchBlockHeight">BCH block —</span><span class="block-hash" id="bchBlockHash">waiting for network…</span></div><div class="block-meta"><span>Updated <b id="bchBlockAge">—</b></span><span>24h Transactions <b id="bchBlockTx">—</b></span><span>Mempool <b id="bchMempool">—</b></span><span>Difficulty <b id="bchDifficulty">—</b></span><span>Source <b>Blockchair</b></span></div></div><div class="status orange" id="bchBlockState">● WAITING</div>
+  </section></div>
+  <section class="card wallet-strip" id="walletStrip"><b>Public Wallet Balances</b><span class="wallet-item">BTC <b id="btcBalance">Not configured</b></span><span class="wallet-item">BCH <b id="bchBalance">Not configured</b></span></section>
   <section class="card stream">
     <div class="stream-title"><b>🟢 Live Share Stream</b><small id="wsState">connecting…</small></div>
     <div class="stream-row" id="stream"><span style="color:#72859d">Waiting for submitted shares…</span></div>
@@ -2594,8 +2729,11 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 <div class="field"><label>Background intensity</label><div class="range-row"><input id="cIntensity" type="range" min="0.2" max="2" step="0.1"><span id="cIntensityVal">1.0x</span></div></div>
 <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input id="cCompact" type="checkbox"> Compact miner cards</label>
 <div class="field"><label>Bitcoin block API base URL</label><input id="cBlockApi" value="https://mempool.space/api"><div class="sub">Default uses mempool.space. Later this can point at a compatible local Mempool/Bitcoin service on Umbrel.</div></div>
+<div class="row"><div class="field"><label>BTC public wallet address (optional)</label><input id="cBtcWallet" placeholder="bc1…"><div class="sub">Watch-only balance. Never enter a seed phrase or private key.</div></div><div class="field"><label>BCH public wallet address (optional)</label><input id="cBchWallet" placeholder="bitcoincash:q…"><div class="sub">Watch-only balance. Never enter a seed phrase or private key.</div></div></div>
 <div class="actions"><button class="btn" onclick="resetCustomization()">Reset</button><button class="btn primary" onclick="saveCustomization()">Save Appearance</button></div>
 </div></div>
+
+<div class="modal block-party" id="blockPartyModal"><div class="dialog card block-party-panel"><div class="block-party-title">BLOCK FOUND!</div><div class="block-party-miner" id="blockPartyMiner">Your miner found a block</div><div class="sub" id="blockPartyDetails" style="margin-top:8px"></div><div class="actions"><button class="btn" onclick="closeBlockParty()">Close</button><button class="btn primary" onclick="replayLastBlock()">Replay Party</button></div></div></div>
 
 <div class="modal" id="diagModal"><div class="dialog card" style="width:min(900px,100%);max-height:85vh;overflow:auto">
 <h2>Miner Diagnostics</h2>
@@ -2647,7 +2785,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 </div>
 </div></div>
 <script>
-let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api"}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map();
+let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:""}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
 const $=id=>document.getElementById(id);
 function fmt(v,d=1){return v==null?'--':Number(v).toFixed(d)}
 
@@ -2777,8 +2915,8 @@ async function loadMiniSpark(id){try{let rows=await fetch(`/api/miners/${id}/his
 async function openDetail(id){selectedMinerId=id;$('detailModal').classList.add('show');let m=await fetch(`/api/miners/${id}/detail`).then(r=>r.json()),t=m.telemetry||{};$('detailTitle').textContent=m.name;$('detailStats').innerHTML=`<div class="detail-stat"><small>Realtime Hashrate</small><b>${hashText(t,m.algorithm)}</b></div><div class="detail-stat"><small>Average Hashrate</small><b>${t.avg_hashrate!=null?fmt(t.avg_hashrate)+' '+(t.avg_hashrate_unit||''):'--'}</b></div><div class="detail-stat"><small>Temperature</small><b>${t.temp_c!=null?fmt(t.temp_c,0)+'°C':'--'}</b></div><div class="detail-stat"><small>Power</small><b>${t.power_w!=null?fmt(t.power_w,0)+' W':'--'}</b></div><div class="detail-stat"><small>Shares Today</small><b>${m.shares_today??'--'}</b></div><div class="detail-stat"><small>Session Shares</small><b>${m.shares_session??'--'}</b></div><div class="detail-stat"><small>Lifetime Shares</small><b>${m.shares_lifetime??'--'}</b></div><div class="detail-stat"><small>Reject %</small><b>${m.reject_pct!=null?fmt(m.reject_pct,4)+'%':'--'}</b></div><div class="detail-stat"><small>Best Share</small><b>${fmtShare(t.best_share)}</b></div><div class="detail-stat"><small>Uptime</small><b>${t.uptime_s?uptime(t.uptime_s):'--'}</b></div><div class="detail-stat"><small>Pool</small><b>${t.pool_alive===true?'Alive':t.pool_alive===false?'Down':'--'}</b></div><div class="detail-stat"><small>IP</small><b style="font-size:14px">${esc(m.ip)}</b></div>`;await loadDetailHistory(3600);await loadDetailEvents(id);await loadHardware(id)}
 function closeDetail(){$('detailModal').classList.remove('show');selectedMinerId=null}
 async function loadDetailHistory(seconds){if(!selectedMinerId)return;let rows=await fetch(`/api/miners/${selectedMinerId}/history?seconds=${seconds}`).then(r=>r.json());requestAnimationFrame(()=>{drawLineChart('hashChart',rows,'hashrate');drawLineChart('tempChart',rows,'temp_c');drawLineChart('powerChart',rows,'power_w')})}
-function eventLabel(e){return({accepted_share:'Accepted share',rejected_share:'Rejected share',best_share:'New best share',miner_offline:'Miner offline',miner_recovered:'Miner recovered',miner_seen_online:'Miner online',temperature_warning:'Temperature warning',hashrate_drop:'Hashrate drop',new_block:'New Bitcoin block'})[e.event_type]||e.event_type}
-function eventIcon(e){return({accepted_share:'🎉',rejected_share:'❌',best_share:'🏆',miner_offline:'🔴',miner_recovered:'🟢',miner_seen_online:'🟢',temperature_warning:'🌡️',hashrate_drop:'⚠️',new_block:'₿'})[e.event_type]||'•'}
+function eventLabel(e){return({accepted_share:'Accepted share',rejected_share:'Rejected share',best_share:'New best share',block_found:'BLOCK FOUND',miner_offline:'Miner offline',miner_recovered:'Miner recovered',miner_seen_online:'Miner online',temperature_warning:'Temperature warning',hashrate_drop:'Hashrate drop',new_block:'New Bitcoin block'})[e.event_type]||e.event_type}
+function eventIcon(e){return({accepted_share:'🎉',rejected_share:'❌',best_share:'🏆',block_found:'🎊',miner_offline:'🔴',miner_recovered:'🟢',miner_seen_online:'🟢',temperature_warning:'🌡️',hashrate_drop:'⚠️',new_block:'₿'})[e.event_type]||'•'}
 function eventValue(e){if(e.event_type==='accepted_share'&&e.value_num!=null)return `+${e.value_num}`;if(e.event_type==='rejected_share'&&e.value_num!=null)return `+${e.value_num}`;if(e.event_type==='new_block')return `#${e.value_text||''}`;return e.value_text??e.value_num??''}
 function eventTable(rows){if(!rows.length)return'<div class="health-item">No event rows are stored yet. Leave RigPulse running while miners submit shares and events will appear here.</div>';return `<table class="event-table"><thead><tr><th></th><th>Time</th><th>Miner</th><th>Event</th><th>Value</th></tr></thead><tbody>${rows.map(e=>`<tr><td>${eventIcon(e)}</td><td>${new Date(e.ts*1000).toLocaleString()}</td><td>${esc(e.miner_name||'Network')}</td><td>${esc(eventLabel(e))}</td><td>${esc(eventValue(e))}</td></tr>`).join('')}</tbody></table>`}
 async function loadDetailEvents(id){try{let rows=await fetch(`/api/events?miner_id=${id}&limit=50`).then(r=>r.json());$('detailEvents').innerHTML=eventTable(rows)}catch(e){$('detailEvents').innerHTML='<div class="sub">Could not load events.</div>'}}
@@ -2858,7 +2996,7 @@ function previewCustomization(){
  const c={
   theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),
   background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,
-  block_api_base:$('cBlockApi').value||'https://mempool.space/api'
+  block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim()
  };
  $('cOpacityVal').textContent=Math.round(c.card_opacity*100)+'%';
  $('cBlurVal').textContent=c.blur_px+'px'; $('cIntensityVal').textContent=c.background_intensity.toFixed(1)+'x';
@@ -2870,15 +3008,15 @@ function chooseBackground(theme){$('cTheme').value=theme;previewCustomization()}
 async function openCustomization(){
  customization=await fetch('/api/customization').then(r=>r.json());
  $('cTheme').value=customization.theme;$('cOpacity').value=customization.card_opacity;$('cBlur').value=customization.blur_px;
- $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;
+ $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';
  previewCustomization();$('customModal').classList.add('show');
 }
 function closeCustomization(){$('customModal').classList.remove('show');applyCustomization(customization)}
 function resetCustomization(){
- $('cTheme').value='midnight';$('cOpacity').value=.82;$('cBlur').value=14;$('cIntensity').value=1;$('cCompact').checked=false;$('cBlockApi').value='https://mempool.space/api';previewCustomization();
+ $('cTheme').value='midnight';$('cOpacity').value=.82;$('cBlur').value=14;$('cIntensity').value=1;$('cCompact').checked=false;$('cBlockApi').value='https://mempool.space/api';$('cBtcWallet').value='';$('cBchWallet').value='';previewCustomization();
 }
 async function saveCustomization(){
- const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api'};
+ const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim()};
  const r=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
  if(!r.ok){toast('Could not save customization');return}
  customization=await r.json();applyCustomization(customization);$('customModal').classList.remove('show');toast('Appearance saved');setTimeout(loadBlockStatus,500);
@@ -2903,6 +3041,20 @@ function newBlockCelebrate(b){
  for(let i=0;i<10;i++){setTimeout(()=>{let e=document.createElement('div');e.className='celebrate';e.textContent='₿';e.style.left=(8+Math.random()*84)+'vw';e.style.top=(-10-Math.random()*20)+'px';document.body.appendChild(e);setTimeout(()=>e.remove(),2400)},i*90)}
  loadBlockStatus();
 }
+
+async function loadChainExtras(){
+ try{
+  const d=await fetch('/api/chain-status').then(r=>r.json()),b=d.bch||{},w=d.wallets||{};
+  if(b.available){$('bchBlockHeight').textContent=`BCH Block ${Number(b.height).toLocaleString()}`;$('bchBlockHash').textContent=shortHash(b.hash);$('bchBlockAge').textContent='Live';$('bchBlockTx').textContent=b.transactions_24h==null?'—':Number(b.transactions_24h).toLocaleString();$('bchMempool').textContent=b.mempool_transactions==null?'—':Number(b.mempool_transactions).toLocaleString();$('bchDifficulty').textContent=fmtDifficulty(b.difficulty);$('bchBlockState').textContent='● LIVE';$('bchBlockState').className='status green'}
+  else{$('bchBlockHeight').textContent='BCH unavailable';$('bchBlockState').textContent='● WAITING';$('bchBlockState').className='status orange'}
+  $('btcBalance').textContent=w.btc?.balance!=null?`${Number(w.btc.balance).toFixed(8)} BTC`:'Not configured';$('bchBalance').textContent=w.bch?.balance!=null?`${Number(w.bch.balance).toFixed(8)} BCH`:'Not configured';
+ }catch(e){}
+}
+function closeBlockParty(){$('blockPartyModal').classList.remove('show')}
+function cardBlockConfetti(minerId){const card=[...document.querySelectorAll('.miner')].find(c=>(c.getAttribute('onclick')||'').includes(`openDetail(${minerId})`));if(!card)return;const end=Date.now()+10000,timer=setInterval(()=>{if(Date.now()>end){clearInterval(timer);return}for(let i=0;i<3;i++){let p=document.createElement('span');p.className='card-confetti';p.textContent=['🎊','✨','₿','🟨'][Math.floor(Math.random()*4)];p.style.left=(5+Math.random()*90)+'%';p.style.top='-15px';card.appendChild(p);setTimeout(()=>p.remove(),1900)}},180)}
+function blockFoundCelebrate(b){lastBlockFound=b;$('replayBlockBtn').style.display='inline-block';$('blockPartyMiner').textContent=`${b.miner_name||'Your miner'} found a block!`;$('blockPartyDetails').textContent=`${b.algorithm||b.details?.algorithm||''} · ${new Date((b.ts||Date.now()/1000)*1000).toLocaleString()}`;$('blockPartyModal').classList.add('show');for(let i=0;i<100;i++){setTimeout(()=>{let e=document.createElement('div');e.className='celebrate';e.textContent=['🎊','🎉','✨','₿','🏆'][Math.floor(Math.random()*5)];e.style.left=(3+Math.random()*94)+'vw';e.style.top=(-10-Math.random()*30)+'px';document.body.appendChild(e);setTimeout(()=>e.remove(),2400)},i*95)}cardBlockConfetti(Number(b.miner_id));load()}
+function replayLastBlock(){if(lastBlockFound)blockFoundCelebrate(lastBlockFound);else toast('No miner block event has been recorded yet')}
+async function loadLastBlockEvent(){try{const b=await fetch('/api/block-found/latest').then(r=>r.json());if(b.available){lastBlockFound=b;$('replayBlockBtn').style.display='inline-block';if(b.active)blockFoundCelebrate(b)}}catch(e){}}
 
 function showDetailSection(section,btn){
  document.querySelectorAll('.detail-tab').forEach(x=>x.classList.remove('active')); if(btn)btn.classList.add('active');
@@ -2955,14 +3107,14 @@ async function openNetwork(){
 function closeNetwork(){$('networkModal').classList.remove('show')}
 function applyFleetBestRing(){document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]);card.classList.toggle('fleet-best',id===fleetBestMinerId)})}
 async function refreshFleetBestRing(){try{const s=await fetch('/api/fleet-summary').then(r=>r.json());fleetBestMinerId=s.fleet_best?.miner_id??null;applyFleetBestRing()}catch(e){}}
-function stabilizeMinerCards(){applyFleetBestRing();document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]),m=miners.find(x=>x.id===id),spark=$(`spark-${id}`);if(spark&&sparkCache.has(id))spark.innerHTML=sparkCache.get(id);const stats=card.querySelector('.stats');if(stats&&!stats.querySelector('.fan-stat'))stats.insertAdjacentHTML('beforeend',`<div class="fan-stat"><span>Fan Speed</span><b>${m?.telemetry?.fan_rpm!=null?fmt(m.telemetry.fan_rpm,0)+' RPM':'--'}</b></div>`)})}
+function stabilizeMinerCards(){applyFleetBestRing();document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]),m=miners.find(x=>x.id===id),spark=$(`spark-${id}`);if(spark&&sparkCache.has(id))spark.innerHTML=sparkCache.get(id);card.classList.toggle('block-winner',!!m?.block_found);if(m?.block_found&&!card.querySelector('.block-found-badge'))card.insertAdjacentHTML('afterbegin','<div class="block-found-badge">⛏ BLOCK FOUND</div>');if(!m?.block_found)card.querySelector('.block-found-badge')?.remove();const stats=card.querySelector('.stats');if(stats&&!stats.querySelector('.current-share-stat'))stats.children[3]?.insertAdjacentHTML('afterend',`<div class="current-share-stat"><span>Current Share</span><b>${fmtShare(m?.telemetry?.current_share)}</b></div>`);if(stats&&!stats.querySelector('.fan-stat'))stats.insertAdjacentHTML('beforeend',`<div class="fan-stat"><span>Fan Speed</span><b>${m?.telemetry?.fan_rpm!=null?fmt(m.telemetry.fan_rpm,0)+' RPM':'--'}</b></div>`)})}
 new MutationObserver(()=>requestAnimationFrame(stabilizeMinerCards)).observe($('miners'),{childList:true});
 function connectWS(){
  let proto=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(`${proto}://${location.host}/ws`);
  ws.onopen=()=>{$('wsState').textContent='LIVE';$('wsState').style.color='#31da7a';ws.send('hello')};
- ws.onmessage=e=>{let x=JSON.parse(e.data);if(x.type==='share')celebrate(x.miner_name,x.count);if(x.type==='best_share')celebrate(x.miner_name,1,'best_share');if(x.type==='rejected_share')toast(`❌ ${x.miner_name}: ${x.count} rejected`);if(x.type==='miner_offline')toast(`🔴 ${x.miner_name} went offline`);if(x.type==='miner_recovered')toast(`🟢 ${x.miner_name} recovered`);if(x.type==='temperature_warning')toast(`🌡️ ${x.miner_name}: ${x.value}°C`);if(x.type==='hashrate_drop')toast(`⚠️ ${x.miner_name}: hashrate drop`);if(x.type==='new_block')newBlockCelebrate(x)};
+ ws.onmessage=e=>{let x=JSON.parse(e.data);if(x.type==='share')celebrate(x.miner_name,x.count);if(x.type==='best_share')celebrate(x.miner_name,1,'best_share');if(x.type==='block_found')blockFoundCelebrate(x);if(x.type==='rejected_share')toast(`❌ ${x.miner_name}: ${x.count} rejected`);if(x.type==='miner_offline')toast(`🔴 ${x.miner_name} went offline`);if(x.type==='miner_recovered')toast(`🟢 ${x.miner_name} recovered`);if(x.type==='temperature_warning')toast(`🌡️ ${x.miner_name}: ${x.value}°C`);if(x.type==='hashrate_drop')toast(`⚠️ ${x.miner_name}: hashrate drop`);if(x.type==='new_block')newBlockCelebrate(x)};
  ws.onclose=()=>{$('wsState').textContent='reconnecting…';setTimeout(connectWS,2000)}
 }
-load();connectWS();refreshFleetBestRing();setInterval(load,10000);setInterval(refreshFleetBestRing,10000);setInterval(loadBlockStatus,20000);
+load().then(loadLastBlockEvent);loadChainExtras();connectWS();refreshFleetBestRing();setInterval(load,10000);setInterval(refreshFleetBestRing,10000);setInterval(loadBlockStatus,20000);setInterval(loadChainExtras,30000);
 </script>
 </body></html>"""
