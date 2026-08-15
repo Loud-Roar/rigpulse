@@ -11,6 +11,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -133,7 +134,7 @@ latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
-app = FastAPI(title="RigPulse", version="0.4.1")
+app = FastAPI(title="RigPulse", version="0.4.2")
 
 
 def db():
@@ -2029,6 +2030,37 @@ def block_status():
 def chain_status():
     return {"btc": latest_block, "bch": latest_bch, "wallets": latest_wallets}
 
+async def refresh_wallet_balances():
+    global latest_wallets
+    cfg = get_customization(); wallets = {"btc": None, "bch": None, "updated_at": int(time.time()), "errors": {}}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.0)) as client:
+        btc_address = cfg.get("btc_wallet_address", "")
+        if btc_address:
+            try:
+                rb = await client.get(cfg.get("block_api_base", "https://mempool.space/api").rstrip("/") + "/address/" + btc_address)
+                rb.raise_for_status(); a = rb.json(); chain = a.get("chain_stats") or {}; mem = a.get("mempool_stats") or {}
+                sats = (chain.get("funded_txo_sum",0)-chain.get("spent_txo_sum",0)) + (mem.get("funded_txo_sum",0)-mem.get("spent_txo_sum",0))
+                wallets["btc"] = {"address": btc_address, "balance": sats / 100_000_000, "unit": "BTC"}
+            except Exception as e: wallets["errors"]["btc"] = str(e)
+        bch_address = cfg.get("bch_wallet_address", "")
+        if bch_address:
+            try:
+                normalized = bch_address if ":" in bch_address else "bitcoincash:" + bch_address
+                rw = await client.get(
+                    "https://blockbook.bch.zelcore.io/api/v2/address/"
+                    + quote(normalized, safe="")
+                    + "?details=basic"
+                )
+                rw.raise_for_status(); entry = rw.json(); sats = entry.get("balance")
+                wallets["bch"] = {"address": bch_address, "balance": (int(sats)/100_000_000) if sats is not None else None, "unit": "BCH"}
+            except Exception as e: wallets["errors"]["bch"] = str(e)
+    latest_wallets = wallets
+    return wallets
+
+@app.post("/api/wallets/refresh")
+async def wallets_refresh():
+    return await refresh_wallet_balances()
+
 
 
 def _safe_float(v):
@@ -2146,22 +2178,7 @@ async def bch_watcher():
                     "mempool_transactions": stats.get("mempool_transactions"),
                     "updated_at": int(time.time()),
                 }
-                wallets = {"btc": None, "bch": None, "updated_at": int(time.time())}
-                btc_address = cfg.get("btc_wallet_address", "")
-                if btc_address:
-                    rb = await client.get(cfg.get("block_api_base", "https://mempool.space/api").rstrip("/") + "/address/" + btc_address)
-                    rb.raise_for_status()
-                    a = rb.json(); chain = a.get("chain_stats") or {}; mem = a.get("mempool_stats") or {}
-                    sats = (chain.get("funded_txo_sum",0)-chain.get("spent_txo_sum",0)) + (mem.get("funded_txo_sum",0)-mem.get("spent_txo_sum",0))
-                    wallets["btc"] = {"address": btc_address, "balance": sats / 100_000_000, "unit": "BTC"}
-                bch_address = cfg.get("bch_wallet_address", "")
-                if bch_address:
-                    rw = await client.get("https://api.blockchair.com/bitcoin-cash/dashboards/address/" + bch_address)
-                    rw.raise_for_status()
-                    data = rw.json().get("data") or {}; entry = data.get(bch_address) or next(iter(data.values()), {})
-                    sats = ((entry or {}).get("address") or {}).get("balance")
-                    wallets["bch"] = {"address": bch_address, "balance": (float(sats)/100_000_000) if sats is not None else None, "unit": "BCH"}
-                latest_wallets = wallets
+            await refresh_wallet_balances()
         except Exception as e:
             if not latest_bch.get("available"):
                 latest_bch = {"available": False, "source": "api.blockchair.com", "error": str(e), "updated_at": int(time.time())}
@@ -3090,7 +3107,7 @@ async function saveCustomization(){
  const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim()};
  const r=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
  if(!r.ok){toast('Could not save customization');return}
- customization=await r.json();applyCustomization(customization);$('customModal').classList.remove('show');toast('Appearance saved');setTimeout(loadBlockStatus,500);
+ customization=await r.json();applyCustomization(customization);$('customModal').classList.remove('show');$('btcBalance').textContent=customization.btc_wallet_address?'Updating…':'Not configured';$('bchBalance').textContent=customization.bch_wallet_address?'Updating…':'Not configured';toast('Customization saved');try{await fetch('/api/wallets/refresh',{method:'POST'});await loadChainExtras()}catch(e){toast('Saved — wallet service is temporarily unavailable')}setTimeout(loadBlockStatus,500);
 }
 ['cTheme','cOpacity','cBlur','cIntensity','cCompact'].forEach(id=>document.addEventListener('input',e=>{if(e.target&&e.target.id===id)previewCustomization()}));
 
@@ -3118,7 +3135,7 @@ async function loadChainExtras(){
   const d=await fetch('/api/chain-status').then(r=>r.json()),b=d.bch||{},w=d.wallets||{};
   if(b.available){$('bchBlockHeight').textContent=`BCH Block ${Number(b.height).toLocaleString()}`;$('bchBlockHash').textContent=shortHash(b.hash);$('bchBlockAge').textContent='Live';$('bchBlockTx').textContent=b.transactions_24h==null?'—':Number(b.transactions_24h).toLocaleString();$('bchMempool').textContent=b.mempool_transactions==null?'—':Number(b.mempool_transactions).toLocaleString();$('bchDifficulty').textContent=fmtDifficulty(b.difficulty);$('bchBlockState').textContent='● LIVE';$('bchBlockState').className='status green'}
   else{$('bchBlockHeight').textContent='BCH unavailable';$('bchBlockState').textContent='● WAITING';$('bchBlockState').className='status orange'}
-  $('btcBalance').textContent=w.btc?.balance!=null?`${Number(w.btc.balance).toFixed(8)} BTC`:'Not configured';$('bchBalance').textContent=w.bch?.balance!=null?`${Number(w.bch.balance).toFixed(8)} BCH`:'Not configured';
+  $('btcBalance').textContent=w.btc?.balance!=null?`${Number(w.btc.balance).toFixed(8)} BTC`:customization.btc_wallet_address?(w.errors?.btc?'Address/API error':'Updating…'):'Not configured';$('bchBalance').textContent=w.bch?.balance!=null?`${Number(w.bch.balance).toFixed(8)} BCH`:customization.bch_wallet_address?(w.errors?.bch?'Address/API error':'Updating…'):'Not configured';
  }catch(e){}
 }
 function closeBlockParty(){$('blockPartyModal').classList.remove('show')}
@@ -3178,7 +3195,7 @@ async function openNetwork(){
 function closeNetwork(){$('networkModal').classList.remove('show')}
 function applyFleetBestRing(){document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]);card.classList.toggle('fleet-best',id===fleetBestMinerId)})}
 async function refreshFleetBestRing(){try{const s=await fetch('/api/fleet-summary').then(r=>r.json());fleetBestMinerId=s.fleet_best?.miner_id??null;applyFleetBestRing()}catch(e){}}
-function stabilizeMinerCards(){applyFleetBestRing();document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]),m=miners.find(x=>x.id===id),spark=$(`spark-${id}`);if(spark&&sparkCache.has(id))spark.innerHTML=sparkCache.get(id);card.classList.toggle('block-winner',!!m?.block_found);if(m?.block_found&&!card.querySelector('.block-found-badge'))card.insertAdjacentHTML('afterbegin','<div class="block-found-badge">⛏ BLOCK FOUND</div>');if(!m?.block_found)card.querySelector('.block-found-badge')?.remove();const stats=card.querySelector('.stats');if(stats&&!stats.querySelector('.current-share-stat'))stats.children[3]?.insertAdjacentHTML('afterend',`<div class="current-share-stat"><span>Current Share</span><b>${fmtShare(m?.telemetry?.current_share)}</b></div>`);if(stats&&!stats.querySelector('.fan-stat'))stats.insertAdjacentHTML('beforeend',`<div class="fan-stat"><span>Fan Speed</span><b>${m?.telemetry?.fan_rpm!=null?fmt(m.telemetry.fan_rpm,0)+' RPM':'--'}</b></div>`)})}
+function stabilizeMinerCards(){applyFleetBestRing();document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]),m=miners.find(x=>x.id===id),spark=$(`spark-${id}`);if(spark&&sparkCache.has(id))spark.innerHTML=sparkCache.get(id);card.classList.toggle('block-winner',!!m?.block_found);if(m?.block_found&&!card.querySelector('.block-found-badge'))card.insertAdjacentHTML('afterbegin','<div class="block-found-badge">⛏ BLOCK FOUND</div>');if(!m?.block_found)card.querySelector('.block-found-badge')?.remove();const stats=card.querySelector('.stats');if(stats&&!stats.querySelector('.current-share-stat'))stats.children[3]?.insertAdjacentHTML('afterend',`<div class="current-share-stat"><span>Current Shares</span><b>${m?.telemetry?.accepted!=null?Number(m.telemetry.accepted).toLocaleString():'--'}</b></div>`);if(stats&&!stats.querySelector('.fan-stat'))stats.insertAdjacentHTML('beforeend',`<div class="fan-stat"><span>Fan Speed</span><b>${m?.telemetry?.fan_rpm!=null?fmt(m.telemetry.fan_rpm,0)+' RPM':'--'}</b></div>`)})}
 new MutationObserver(()=>requestAnimationFrame(stabilizeMinerCards)).observe($('miners'),{childList:true});
 function connectWS(){
  let proto=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(`${proto}://${location.host}/ws`);
