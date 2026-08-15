@@ -134,7 +134,7 @@ latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
-app = FastAPI(title="RigPulse", version="0.4.3")
+app = FastAPI(title="RigPulse", version="0.4.4")
 
 
 def db():
@@ -3216,7 +3216,7 @@ async function openNetwork(){
 function closeNetwork(){$('networkModal').classList.remove('show')}
 function applyFleetBestRing(){document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]);card.classList.toggle('fleet-best',id===fleetBestMinerId)})}
 async function refreshFleetBestRing(){try{const s=await fetch('/api/fleet-summary').then(r=>r.json());fleetBestMinerId=s.fleet_best?.miner_id??null;applyFleetBestRing()}catch(e){}}
-function stabilizeMinerCards(){applyFleetBestRing();document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]),m=miners.find(x=>x.id===id),spark=$(`spark-${id}`);if(spark&&sparkCache.has(id))spark.innerHTML=sparkCache.get(id);card.classList.toggle('block-winner',!!m?.block_found);if(m?.block_found&&!card.querySelector('.block-found-badge'))card.insertAdjacentHTML('afterbegin','<div class="block-found-badge">⛏ BLOCK FOUND</div>');if(!m?.block_found)card.querySelector('.block-found-badge')?.remove();const stats=card.querySelector('.stats');if(stats&&!stats.querySelector('.current-share-stat'))stats.children[3]?.insertAdjacentHTML('afterend',`<div class="current-share-stat"><span>Current Share</span><b>${fmtShare(m?.telemetry?.current_share)}</b></div>`);if(stats&&!stats.querySelector('.fan-stat'))stats.insertAdjacentHTML('beforeend',`<div class="fan-stat"><span>Fan Speed</span><b>${m?.telemetry?.fan_rpm!=null?fmt(m.telemetry.fan_rpm,0)+' RPM':'--'}</b></div>`)})}
+function stabilizeMinerCards(){applyFleetBestRing();document.querySelectorAll('.miner').forEach(card=>{const id=Number((card.getAttribute('onclick')||'').match(/openDetail\((\d+)\)/)?.[1]),m=miners.find(x=>x.id===id),spark=$(`spark-${id}`);if(spark&&sparkCache.has(id))spark.innerHTML=sparkCache.get(id);card.classList.toggle('block-winner',!!m?.block_found);if(m?.block_found&&!card.querySelector('.block-found-badge'))card.insertAdjacentHTML('afterbegin','<div class="block-found-badge">⛏ BLOCK FOUND</div>');if(!m?.block_found)card.querySelector('.block-found-badge')?.remove();const stats=card.querySelector('.stats');if(stats&&!stats.querySelector('.current-share-stat'))stats.children[3]?.insertAdjacentHTML('afterend',`<div class="current-share-stat"><span>Current Share Difficulty</span><b>${fmtShare(m?.telemetry?.current_share)}</b></div>`);if(stats&&!stats.querySelector('.fan-stat'))stats.insertAdjacentHTML('beforeend',`<div class="fan-stat"><span>Fan Speed</span><b>${m?.telemetry?.fan_rpm!=null?fmt(m.telemetry.fan_rpm,0)+' RPM':'--'}</b></div>`)})}
 new MutationObserver(()=>requestAnimationFrame(stabilizeMinerCards)).observe($('miners'),{childList:true});
 function connectWS(){
  let proto=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(`${proto}://${location.host}/ws`);
