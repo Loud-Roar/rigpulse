@@ -134,7 +134,7 @@ latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
-app = FastAPI(title="RigPulse", version="0.4.4")
+app = FastAPI(title="RigPulse", version="0.4.5")
 
 
 def db():
@@ -448,6 +448,10 @@ def parse_avalon(parts: dict[str, Any]) -> Telemetry:
             "summary": summary,
             "device": dev,
             "avalon_mm": mm,
+            # Nano 3 reports the assigned pool target as "Last Share
+            # Difficulty". It is not the actual hash difficulty of the last
+            # submitted share, so it must not populate Current Share Difficulty.
+            "ignore_reported_current_share": True,
             "primary_pool": primary_pool,
         },
     )
@@ -1424,7 +1428,7 @@ def enrich_share_telemetry(t: Telemetry) -> Telemetry:
         primary = {}
     pool_url = primary.get("displayURL") or primary.get("URL") or primary.get("url") or primary.get("stratumURL") or raw.get("stratumURL")
     pool_user = primary.get("User") or primary.get("user") or primary.get("stratumUser") or raw.get("stratumUser")
-    if current not in (None, ""):
+    if current not in (None, "") and not raw.get("ignore_reported_current_share"):
         t.current_share = str(current)
     t.found_blocks = max(0, int(found)) if found is not None else None
     t.pool_key = f"{pool_url or ''}|{pool_user or ''}" if pool_url or pool_user else None
@@ -3163,7 +3167,7 @@ function closeBlockParty(){$('blockPartyModal').classList.remove('show')}
 function cardBlockConfetti(minerId){const card=[...document.querySelectorAll('.miner')].find(c=>(c.getAttribute('onclick')||'').includes(`openDetail(${minerId})`));if(!card)return;const end=Date.now()+10000,timer=setInterval(()=>{if(Date.now()>end){clearInterval(timer);return}for(let i=0;i<3;i++){let p=document.createElement('span');p.className='card-confetti';p.textContent=['🎊','✨','₿','🟨'][Math.floor(Math.random()*4)];p.style.left=(5+Math.random()*90)+'%';p.style.top='-15px';card.appendChild(p);setTimeout(()=>p.remove(),1900)}},180)}
 function blockFoundCelebrate(b){lastBlockFound=b;$('replayBlockBtn').style.display='inline-block';$('blockPartyMiner').textContent=`${b.miner_name||'Your miner'} found a block!`;$('blockPartyDetails').textContent=`${b.algorithm||b.details?.algorithm||''} · ${new Date((b.ts||Date.now()/1000)*1000).toLocaleString()}`;$('blockPartyModal').classList.add('show');for(let i=0;i<100;i++){setTimeout(()=>{let e=document.createElement('div');e.className='celebrate';e.textContent=['🎊','🎉','✨','₿','🏆'][Math.floor(Math.random()*5)];e.style.left=(3+Math.random()*94)+'vw';e.style.top=(-10-Math.random()*30)+'px';document.body.appendChild(e);setTimeout(()=>e.remove(),2400)},i*95)}cardBlockConfetti(Number(b.miner_id));load()}
 function replayLastBlock(){if(lastBlockFound)blockFoundCelebrate(lastBlockFound);else toast('No miner block event has been recorded yet')}
-async function loadLastBlockEvent(){try{const b=await fetch('/api/block-found/latest').then(r=>r.json());if(b.available){lastBlockFound=b;$('replayBlockBtn').style.display='inline-block';if(b.active)blockFoundCelebrate(b)}}catch(e){}}
+async function loadLastBlockEvent(){try{const b=await fetch('/api/block-found/latest').then(r=>r.json());if(b.available){lastBlockFound=b;$('replayBlockBtn').style.display='inline-block';const ageSeconds=Math.max(0,Date.now()/1000-Number(b.ts||0));if(b.active&&ageSeconds<12*60*60)blockFoundCelebrate(b)}}catch(e){}}
 
 function showDetailSection(section,btn){
  document.querySelectorAll('.detail-tab').forEach(x=>x.classList.remove('active')); if(btn)btn.classList.add('active');
