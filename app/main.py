@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import shutil
@@ -103,7 +104,12 @@ class CustomizationIn(BaseModel):
     block_api_base: str = "https://mempool.space/api"
     btc_wallet_address: str = ""
     bch_wallet_address: str = ""
+    btc_solopool_address: str = ""
     bch_solopool_address: str = ""
+    btc_solo_hashrate: float = Field(default=0, ge=0)
+    btc_solo_hashrate_unit: str = "TH"
+    bch_solo_hashrate: float = Field(default=0, ge=0)
+    bch_solo_hashrate_unit: str = "TH"
 
 
 class WSManager:
@@ -134,7 +140,8 @@ latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
-app = FastAPI(title="RigPulse", version="0.4.5")
+latest_solopool: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None, "errors": {}}
+app = FastAPI(title="RigPulse", version="0.4.6")
 
 
 def db():
@@ -211,7 +218,12 @@ def init_db():
             "block_api_base": "https://mempool.space/api",
             "btc_wallet_address": "",
             "bch_wallet_address": "",
+            "btc_solopool_address": "",
             "bch_solopool_address": "",
+            "btc_solo_hashrate": "0",
+            "btc_solo_hashrate_unit": "TH",
+            "bch_solo_hashrate": "0",
+            "bch_solo_hashrate_unit": "TH",
         }
         for k,v in defaults.items():
             c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k,v))
@@ -243,7 +255,12 @@ def get_customization():
         "block_api_base": rows.get("block_api_base", "https://mempool.space/api").rstrip("/"),
         "btc_wallet_address": rows.get("btc_wallet_address", "").strip(),
         "bch_wallet_address": rows.get("bch_wallet_address", "").strip(),
+        "btc_solopool_address": rows.get("btc_solopool_address", "").strip(),
         "bch_solopool_address": rows.get("bch_solopool_address", "").strip(),
+        "btc_solo_hashrate": float(rows.get("btc_solo_hashrate", "0") or 0),
+        "btc_solo_hashrate_unit": rows.get("btc_solo_hashrate_unit", "TH").upper(),
+        "bch_solo_hashrate": float(rows.get("bch_solo_hashrate", "0") or 0),
+        "bch_solo_hashrate_unit": rows.get("bch_solo_hashrate_unit", "TH").upper(),
     }
 
 
@@ -2053,7 +2070,37 @@ def block_status():
 
 @app.get("/api/chain-status")
 def chain_status():
-    return {"btc": latest_block, "bch": latest_bch, "wallets": latest_wallets}
+    cfg = get_customization()
+    return {
+        "btc": latest_block,
+        "bch": latest_bch,
+        "wallets": latest_wallets,
+        "solo_chances": {
+            "btc": _solo_chance(cfg.get("btc_solo_hashrate", 0), cfg.get("btc_solo_hashrate_unit", "TH"), latest_block.get("difficulty")),
+            "bch": _solo_chance(cfg.get("bch_solo_hashrate", 0), cfg.get("bch_solo_hashrate_unit", "TH"), latest_bch.get("difficulty")),
+        },
+        "solopool": latest_solopool,
+    }
+
+
+def _solo_chance(value: float, unit: str, difficulty: Any) -> dict[str, Any] | None:
+    try:
+        value = float(value); difficulty = float(difficulty)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0 or difficulty <= 0:
+        return None
+    multipliers = {"TH": 1e12, "PH": 1e15}
+    unit = str(unit or "TH").upper()
+    hashrate_hs = value * multipliers.get(unit, 1e12)
+    expected_seconds = difficulty * (2 ** 32) / hashrate_hs
+    def chance(seconds: int) -> float:
+        return (1 - math.exp(-seconds / expected_seconds)) * 100
+    return {
+        "hashrate": value, "unit": unit, "expected_seconds": expected_seconds,
+        "chance_24h_pct": chance(86400), "chance_7d_pct": chance(7 * 86400),
+        "chance_30d_pct": chance(30 * 86400), "chance_365d_pct": chance(365 * 86400),
+    }
 
 async def refresh_wallet_balances():
     global latest_wallets
@@ -2220,48 +2267,69 @@ def _telemetry_pool_identity(t: Telemetry | None) -> tuple[str, str]:
 
 def _solopool_address(value: str) -> str:
     address = (value or "").strip().split(".", 1)[0]
-    return re.sub(r"^bitcoincash:", "", address, flags=re.I)
+    return re.sub(r"^(?:bitcoin|bitcoincash):", "", address, flags=re.I)
 
 async def solopool_watcher():
+    global latest_solopool
     while True:
         try:
             cfg = get_customization()
-            addresses = set()
-            configured = _solopool_address(cfg.get("bch_solopool_address", ""))
-            if configured: addresses.add(configured)
+            addresses: dict[str, set[str]] = {"btc": set(), "bch": set()}
+            for coin in ("btc", "bch"):
+                configured = _solopool_address(cfg.get(f"{coin}_solopool_address", ""))
+                if configured: addresses[coin].add(configured)
             with db() as c: miner_rows = list(c.execute("SELECT * FROM miners ORDER BY id"))
             for miner in miner_rows:
                 url, user = _telemetry_pool_identity(latest_telemetry.get(miner["id"]))
-                if "solopool.org" in url.lower() and user:
-                    addresses.add(_solopool_address(user))
+                url_lower = url.lower()
+                if "solopool.org" in url_lower and user:
+                    coin = "bch" if "bch" in url_lower else "btc" if "btc" in url_lower else None
+                    if coin and not addresses[coin]: addresses[coin].add(_solopool_address(user))
+            statuses: dict[str, Any] = {"btc": None, "bch": None, "updated_at": int(time.time()), "errors": {}}
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.0)) as client:
-                for address in addresses:
-                    response = await client.get(f"https://bch.solopool.org/api/miners/{address}")
-                    response.raise_for_status(); data = response.json(); blocks = data.get("blocks") or []
-                    if not blocks: continue
-                    block = max(blocks, key=lambda b: int(b.get("timestamp") or 0)); worker = str(block.get("worker") or "").strip()
-                    winner = None
-                    for miner in miner_rows:
-                        _url, pool_user = _telemetry_pool_identity(latest_telemetry.get(miner["id"]))
-                        worker_from_user = pool_user.rsplit(".",1)[-1] if "." in pool_user else ""
-                        if worker and (str(miner["name"]).lower() == worker.lower() or worker_from_user.lower() == worker.lower()):
-                            winner = miner; break
-                    if winner is None: continue
-                    block_hash = str(block.get("hash") or block.get("tx") or "")
-                    with db() as c:
-                        old = c.execute("SELECT block_hash FROM pool_block_claims WHERE miner_id=?", (winner["id"],)).fetchone()
-                        is_new = not old or old["block_hash"] != block_hash
-                        c.execute("""INSERT INTO pool_block_claims(miner_id,pool_address,block_hash,block_height,found_at,active)
-                                     VALUES(?,?,?,?,?,1) ON CONFLICT(miner_id) DO UPDATE SET
-                                     pool_address=excluded.pool_address,block_hash=excluded.block_hash,
-                                     block_height=excluded.block_height,found_at=excluded.found_at,active=1""",
-                                  (winner["id"], address, block_hash, block.get("height"), block.get("timestamp")))
-                    if is_new:
-                        details = {"source":"bch.solopool.org","pool_address":address,"worker":worker,"hash":block_hash,"height":block.get("height"),"share_diff":block.get("shareDiff"),"reward":block.get("minerReward"),"algorithm":winner["algorithm"]}
-                        record_event(winner["id"], "block_found", value_text=str(block.get("height") or ""), details=details)
-                        await manager.broadcast({"type":"block_found","miner_id":winner["id"],"miner_name":winner["name"],"algorithm":winner["algorithm"],"worker":worker,"height":block.get("height"),"share_diff":block.get("shareDiff"),"ts":block.get("timestamp")})
-        except Exception:
-            pass
+                for coin, coin_addresses in addresses.items():
+                    for address in coin_addresses:
+                        try:
+                            response = await client.get(f"https://{coin}.solopool.org/api/miners/{address}")
+                            response.raise_for_status(); data = response.json()
+                            if not isinstance(data, dict) or not data: continue
+                            statuses[coin] = {
+                                "address": address, "hashrate": data.get("hashrate"),
+                                "average_hashrate": data.get("averageHashrate"),
+                                "online_workers": data.get("onlineWorkers"), "offline_workers": data.get("offlineWorkers"),
+                                "total_workers": data.get("totalWorkers"), "last_share": data.get("lastShare"),
+                                "round_shares": data.get("roundShares"), "best_share": data.get("bestShare"),
+                                "total_blocks": data.get("totalBlocks"), "last_block_time": data.get("lastBlockTime"),
+                                "source": f"{coin}.solopool.org",
+                            }
+                            blocks = data.get("blocks") or []
+                            if not blocks: continue
+                            block = max(blocks, key=lambda b: int(b.get("timestamp") or 0)); worker = str(block.get("worker") or "").strip()
+                            winner = None
+                            for miner in miner_rows:
+                                _url, pool_user = _telemetry_pool_identity(latest_telemetry.get(miner["id"]))
+                                worker_from_user = pool_user.rsplit(".",1)[-1] if "." in pool_user else ""
+                                if worker and (str(miner["name"]).lower() == worker.lower() or worker_from_user.lower() == worker.lower()):
+                                    winner = miner; break
+                            if winner is None: continue
+                            block_hash = str(block.get("hash") or block.get("tx") or "")
+                            with db() as c:
+                                old = c.execute("SELECT block_hash FROM pool_block_claims WHERE miner_id=?", (winner["id"],)).fetchone()
+                                is_new = not old or old["block_hash"] != block_hash
+                                c.execute("""INSERT INTO pool_block_claims(miner_id,pool_address,block_hash,block_height,found_at,active)
+                                             VALUES(?,?,?,?,?,1) ON CONFLICT(miner_id) DO UPDATE SET
+                                             pool_address=excluded.pool_address,block_hash=excluded.block_hash,
+                                             block_height=excluded.block_height,found_at=excluded.found_at,active=1""",
+                                          (winner["id"], address, block_hash, block.get("height"), block.get("timestamp")))
+                            if is_new:
+                                details = {"source":f"{coin}.solopool.org","pool_address":address,"worker":worker,"hash":block_hash,"height":block.get("height"),"share_diff":block.get("shareDiff"),"reward":block.get("minerReward"),"algorithm":winner["algorithm"]}
+                                record_event(winner["id"], "block_found", value_text=str(block.get("height") or ""), details=details)
+                                await manager.broadcast({"type":"block_found","miner_id":winner["id"],"miner_name":winner["name"],"algorithm":winner["algorithm"],"worker":worker,"height":block.get("height"),"share_diff":block.get("shareDiff"),"ts":block.get("timestamp")})
+                        except Exception as e:
+                            statuses["errors"][coin] = str(e)
+            latest_solopool = statuses
+        except Exception as e:
+            latest_solopool = {**latest_solopool, "error": str(e), "updated_at": int(time.time())}
         await asyncio.sleep(20)
 
 
@@ -2693,6 +2761,7 @@ button,input,select{font:inherit}
 .block-icon{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;font-size:25px;background:rgba(247,147,26,.12);border:1px solid rgba(247,147,26,.35)}
 .block-main{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.block-height{font-size:23px;font-weight:900}.block-hash{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:#8fa4bb;font-size:11px}
 .block-meta{display:flex;gap:16px;color:#91a4bb;font-size:12px;flex-wrap:wrap}.block-meta b{color:#fff}
+.solo-odds{margin-top:7px;color:#8fa4bb;font-size:11px}.solo-odds b{color:#70d8ff}.solopool-strip{margin-top:10px;padding:11px 14px;display:grid;grid-template-columns:auto 1fr 1fr;gap:14px;align-items:center}.solopool-item{min-width:0;color:#8fa4bb;font-size:11px}.solopool-item b{color:#fff}.solopool-title{font-weight:800}.solopool-stats{display:flex;gap:10px;flex-wrap:wrap;margin-top:3px}
 .block-pulse{animation:blockPulse 1.8s ease}
 @keyframes blockPulse{0%{box-shadow:0 0 0 0 rgba(247,147,26,.65)}100%{box-shadow:0 0 0 30px rgba(247,147,26,0)}}
 .miner.block-winner{border-color:#ffd84d;box-shadow:0 0 18px rgba(255,190,30,.38)}.block-found-badge{position:absolute;z-index:4;left:12px;top:-10px;background:#5b2500;border:1px solid #ffcf40;color:#fff1a8;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:900}.card-confetti{position:absolute;z-index:5;pointer-events:none;font-size:14px;animation:cardConfetti 1.8s linear forwards}@keyframes cardConfetti{from{transform:translateY(-20px) rotate(0);opacity:1}to{transform:translateY(210px) rotate(500deg);opacity:0}}
@@ -2736,7 +2805,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
  .main{padding:9px 8px 35px}.top{margin-bottom:8px;gap:8px}.top h1{font-size:19px}.top>div{display:flex;gap:5px}.top .pill,.top .btn{padding:7px 9px;font-size:11px}
  .health-banner{margin:6px 0 8px;padding:7px 9px}.metrics{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
  .metric{padding:9px 8px;min-height:78px}.metric .label{font-size:9px}.metric .value{font-size:17px;margin-top:4px;line-height:1.1}.metric .sub{font-size:9px;line-height:1.1}
- .chain-strips{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.block-strip{padding:8px;grid-template-columns:1fr;gap:5px}.block-icon{width:30px;height:30px;font-size:17px}.block-height{font-size:13px}.block-hash{display:none}.block-meta{gap:4px 7px;font-size:8px}.block-meta span:nth-child(2),.block-meta span:nth-child(3),.block-meta span:nth-child(5){display:none}.block-strip>.status{position:absolute;right:6px;top:6px;font-size:7px}.wallet-strip{padding:8px;gap:8px}.wallet-item{font-size:9px}.wallet-item b{font-size:11px}
+ .chain-strips{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.block-strip{padding:8px;grid-template-columns:1fr;gap:5px}.block-icon{width:30px;height:30px;font-size:17px}.block-height{font-size:13px}.block-hash{display:none}.block-meta{gap:4px 7px;font-size:8px}.block-meta span:nth-child(2),.block-meta span:nth-child(3),.block-meta span:nth-child(5){display:none}.solo-odds{font-size:8px;margin-top:4px}.block-strip>.status{position:absolute;right:6px;top:6px;font-size:7px}.wallet-strip{padding:8px;gap:8px}.wallet-item{font-size:9px}.wallet-item b{font-size:11px}.solopool-strip{grid-template-columns:1fr 1fr;padding:8px;gap:7px}.solopool-title{grid-column:1/-1;font-size:11px}.solopool-item{font-size:8px}.solopool-stats{gap:4px}
  .stream{padding:9px;margin-top:8px}.stream-row{min-height:36px;gap:10px}.stream-item{min-width:42px;font-size:20px}
  .toolbar{gap:5px;margin:9px 0;overflow-x:auto;flex-wrap:nowrap;scrollbar-width:none}.toolbar::-webkit-scrollbar{display:none}.toolbar .pill{flex:0 0 auto;padding:7px 9px;font-size:10px}.toolbar .spacer{display:none}.sort-select{flex:0 0 auto;padding:7px;font-size:10px}.toolbar #onlineCount{flex:0 0 auto;font-size:10px;white-space:nowrap}
  .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.miner{padding:9px;min-width:0}.miner-head{display:block}.miner h3{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px}.miner .status{font-size:9px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.miner .sub{font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.miner .hash{font-size:19px;margin:7px 0 3px;white-space:nowrap}.miner .spark{height:21px;margin:1px 0 5px}.miner .spark svg{height:21px!important}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding-top:6px}.stats span{font-size:7px}.stats b{font-size:10px;overflow-wrap:anywhere}.stats>div:nth-child(3),.stats>div:nth-child(6),.stats>div:nth-child(7),.stats>div:nth-child(8){display:none}
@@ -2775,13 +2844,14 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
     <div class="block-icon">₿</div>
     <div>
       <div class="block-main"><span class="block-height" id="blockHeight">Bitcoin block —</span><span class="block-hash" id="blockHash">waiting for network…</span></div>
-      <div class="block-meta"><span>Age <b id="blockAge">—</b></span><span>Transactions <b id="blockTx">—</b></span><span>Size <b id="blockSize">—</b></span><span>Difficulty <b id="blockDifficulty">—</b></span><span>Source <b id="blockSource">mempool.space</b></span></div>
+      <div class="block-meta"><span>Age <b id="blockAge">—</b></span><span>Transactions <b id="blockTx">—</b></span><span>Size <b id="blockSize">—</b></span><span>Difficulty <b id="blockDifficulty">—</b></span><span>Source <b id="blockSource">mempool.space</b></span></div><div class="solo-odds">Solo odds: <b id="btcSoloOdds">Configure hashrate</b> · Expected <b id="btcSoloExpected">—</b></div>
     </div>
     <div class="status green" id="blockState">● LIVE</div>
   </section><section class="card block-strip" id="bchBlockStrip">
-    <div class="block-icon">₿</div><div><div class="block-main"><span class="block-height" id="bchBlockHeight">BCH block —</span><span class="block-hash" id="bchBlockHash">waiting for network…</span></div><div class="block-meta"><span>Updated <b id="bchBlockAge">—</b></span><span>24h Transactions <b id="bchBlockTx">—</b></span><span>Mempool <b id="bchMempool">—</b></span><span>Difficulty <b id="bchDifficulty">—</b></span><span>Source <b>Blockchair</b></span></div></div><div class="status orange" id="bchBlockState">● WAITING</div>
+    <div class="block-icon">₿</div><div><div class="block-main"><span class="block-height" id="bchBlockHeight">BCH block —</span><span class="block-hash" id="bchBlockHash">waiting for network…</span></div><div class="block-meta"><span>Updated <b id="bchBlockAge">—</b></span><span>24h Transactions <b id="bchBlockTx">—</b></span><span>Mempool <b id="bchMempool">—</b></span><span>Difficulty <b id="bchDifficulty">—</b></span><span>Source <b>Blockchair</b></span></div><div class="solo-odds">Solo odds: <b id="bchSoloOdds">Configure hashrate</b> · Expected <b id="bchSoloExpected">—</b></div></div><div class="status orange" id="bchBlockState">● WAITING</div>
   </section></div>
   <section class="card wallet-strip" id="walletStrip"><b>Public Wallet Balances</b><span class="wallet-item">BTC <b id="btcBalance">Not configured</b></span><span class="wallet-item">BCH <b id="bchBalance">Not configured</b></span></section>
+  <section class="card solopool-strip" id="solopoolStrip"><div class="solopool-title">SoloPool Status</div><div class="solopool-item"><b>BTC</b><div class="solopool-stats" id="btcSoloPoolStatus"><span>Not configured</span></div></div><div class="solopool-item"><b>BCH</b><div class="solopool-stats" id="bchSoloPoolStatus"><span>Not configured</span></div></div></section>
   <section class="card stream">
     <div class="stream-title"><b>🟢 Live Share Stream</b><small id="wsState">connecting…</small></div>
     <div class="stream-row" id="stream"><span style="color:#72859d">Waiting for submitted shares…</span></div>
@@ -2842,8 +2912,9 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input id="cCompact" type="checkbox"> Compact miner cards</label>
 <div class="field"><label>Bitcoin block API base URL</label><input id="cBlockApi" value="https://mempool.space/api"><div class="sub">Default uses mempool.space. Later this can point at a compatible local Mempool/Bitcoin service on Umbrel.</div></div>
 <div class="row"><div class="field"><label>BTC public wallet address (optional)</label><input id="cBtcWallet" placeholder="bc1…"><div class="sub">Watch-only balance. Never enter a seed phrase or private key.</div></div><div class="field"><label>BCH public wallet address (optional)</label><input id="cBchWallet" placeholder="bitcoincash:q…"><div class="sub">Watch-only balance. Never enter a seed phrase or private key.</div></div></div>
-<div class="field"><label>BCH SoloPool public mining address (optional)</label><input id="cBchSoloPool" placeholder="q…"><div class="sub">Used for pool-side block detection. RigPulse also auto-detects this from SoloPool worker usernames when firmware reports them.</div></div>
-<div class="actions"><button class="btn" onclick="resetCustomization()">Reset</button><button class="btn primary" onclick="saveCustomization()">Save Appearance</button></div>
+<div class="row"><div class="field"><label>BTC SoloPool mining address (optional)</label><input id="cBtcSoloPool" placeholder="bc1…"><div class="sub">Loads public BTC SoloPool miner status.</div></div><div class="field"><label>BCH SoloPool mining address (optional)</label><input id="cBchSoloPool" placeholder="q…"><div class="sub">Loads public status and enables pool-side block detection.</div></div></div>
+<div class="row"><div class="field"><label>BTC solo-mining hashrate</label><div style="display:grid;grid-template-columns:1fr 90px;gap:7px"><input id="cBtcSoloHash" type="number" min="0" step="any" placeholder="476"><select id="cBtcSoloUnit"><option value="TH">TH/s</option><option value="PH">PH/s</option></select></div><div class="sub">Used only for probability calculations.</div></div><div class="field"><label>BCH solo-mining hashrate</label><div style="display:grid;grid-template-columns:1fr 90px;gap:7px"><input id="cBchSoloHash" type="number" min="0" step="any" placeholder="476"><select id="cBchSoloUnit"><option value="TH">TH/s</option><option value="PH">PH/s</option></select></div><div class="sub">Enter the hashrate actually pointed at BCH.</div></div></div>
+<div class="actions"><button class="btn" onclick="resetCustomization()">Reset</button><button class="btn primary" onclick="saveCustomization()">Save Customization</button></div>
 </div></div>
 
 <div class="modal block-party" id="blockPartyModal"><div class="dialog card block-party-panel"><div class="block-party-title">BLOCK FOUND!</div><div class="block-party-miner" id="blockPartyMiner">Your miner found a block</div><div class="sub" id="blockPartyDetails" style="margin-top:8px"></div><div class="actions"><button class="btn" onclick="closeBlockParty()">Close</button><button class="btn primary" onclick="replayLastBlock()">Replay Party</button></div></div></div>
@@ -2898,7 +2969,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 </div>
 </div></div>
 <script>
-let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:"",bch_solopool_address:""}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
+let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:"",btc_solopool_address:"",bch_solopool_address:"",btc_solo_hashrate:0,btc_solo_hashrate_unit:"TH",bch_solo_hashrate:0,bch_solo_hashrate_unit:"TH"}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
 const $=id=>document.getElementById(id);
 function fmt(v,d=1){return v==null?'--':Number(v).toFixed(d)}
 
@@ -3109,7 +3180,7 @@ function previewCustomization(){
  const c={
   theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),
   background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,
-  block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim()
+  block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value
  };
  $('cOpacityVal').textContent=Math.round(c.card_opacity*100)+'%';
  $('cBlurVal').textContent=c.blur_px+'px'; $('cIntensityVal').textContent=c.background_intensity.toFixed(1)+'x';
@@ -3121,15 +3192,15 @@ function chooseBackground(theme){$('cTheme').value=theme;previewCustomization()}
 async function openCustomization(){
  customization=await fetch('/api/customization').then(r=>r.json());
  $('cTheme').value=customization.theme;$('cOpacity').value=customization.card_opacity;$('cBlur').value=customization.blur_px;
- $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';$('cBchSoloPool').value=customization.bch_solopool_address||'';
+ $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';$('cBtcSoloPool').value=customization.btc_solopool_address||'';$('cBchSoloPool').value=customization.bch_solopool_address||'';$('cBtcSoloHash').value=customization.btc_solo_hashrate||'';$('cBtcSoloUnit').value=customization.btc_solo_hashrate_unit||'TH';$('cBchSoloHash').value=customization.bch_solo_hashrate||'';$('cBchSoloUnit').value=customization.bch_solo_hashrate_unit||'TH';
  previewCustomization();$('customModal').classList.add('show');
 }
 function closeCustomization(){$('customModal').classList.remove('show');applyCustomization(customization)}
 function resetCustomization(){
- $('cTheme').value='midnight';$('cOpacity').value=.82;$('cBlur').value=14;$('cIntensity').value=1;$('cCompact').checked=false;$('cBlockApi').value='https://mempool.space/api';$('cBtcWallet').value='';$('cBchWallet').value='';$('cBchSoloPool').value='';previewCustomization();
+ $('cTheme').value='midnight';$('cOpacity').value=.82;$('cBlur').value=14;$('cIntensity').value=1;$('cCompact').checked=false;$('cBlockApi').value='https://mempool.space/api';$('cBtcWallet').value='';$('cBchWallet').value='';$('cBtcSoloPool').value='';$('cBchSoloPool').value='';$('cBtcSoloHash').value='';$('cBchSoloHash').value='';$('cBtcSoloUnit').value='TH';$('cBchSoloUnit').value='TH';previewCustomization();
 }
 async function saveCustomization(){
- const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim()};
+ const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value};
  const r=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
  if(!r.ok){toast('Could not save customization');return}
  customization=await r.json();applyCustomization(customization);$('customModal').classList.remove('show');$('btcBalance').textContent=customization.btc_wallet_address?'Updating…':'Not configured';$('bchBalance').textContent=customization.bch_wallet_address?'Updating…':'Not configured';toast('Customization saved');try{await fetch('/api/wallets/refresh',{method:'POST'});await loadChainExtras()}catch(e){toast('Saved — wallet service is temporarily unavailable')}setTimeout(loadBlockStatus,500);
@@ -3155,12 +3226,19 @@ function newBlockCelebrate(b){
  loadBlockStatus();
 }
 
+function chancePct(v){if(v==null)return'—';let n=Number(v);if(n>=1)return n.toFixed(2)+'%';if(n>=.01)return n.toFixed(3)+'%';if(n>=.0001)return n.toFixed(5)+'%';return n.toExponential(2)+'%'}
+function expectedTime(seconds){if(seconds==null||!Number.isFinite(Number(seconds)))return'—';let d=Number(seconds)/86400;if(d<1)return Math.max(1,Math.round(Number(seconds)/3600))+' hours';if(d<365)return d.toFixed(d<10?1:0)+' days';let y=d/365;return y<1000?y.toFixed(y<10?1:0)+' years':y.toExponential(2)+' years'}
+function renderSoloChance(coin,c){const odds=$(coin+'SoloOdds'),expected=$(coin+'SoloExpected');if(!c){odds.textContent='Configure hashrate';expected.textContent='—';return}odds.textContent=`24h ${chancePct(c.chance_24h_pct)} · 7d ${chancePct(c.chance_7d_pct)} · 30d ${chancePct(c.chance_30d_pct)}`;expected.textContent=expectedTime(c.expected_seconds)}
+function renderSoloPool(coin,p,configured){const el=$(coin+'SoloPoolStatus');if(!p){el.innerHTML=`<span>${configured?'Waiting for API…':'Not configured'}</span>`;return}el.innerHTML=`<span>Hashrate <b>${hashFromHs(p.hashrate)}</b></span><span>Workers <b>${p.online_workers??0}/${p.total_workers??0}</b></span><span>Last share <b>${blockAge(p.last_share)}</b></span><span>Best <b>${fmtShare(p.best_share)}</b></span><span>Blocks <b>${p.total_blocks??0}</b></span>`}
+function hashFromHs(v){if(v==null)return'—';let n=Number(v);if(n>=1e15)return(n/1e15).toFixed(2)+' PH/s';if(n>=1e12)return(n/1e12).toFixed(2)+' TH/s';if(n>=1e9)return(n/1e9).toFixed(2)+' GH/s';return n.toLocaleString()+' H/s'}
+
 async function loadChainExtras(){
  try{
-  const d=await fetch('/api/chain-status').then(r=>r.json()),b=d.bch||{},w=d.wallets||{};
+  const d=await fetch('/api/chain-status').then(r=>r.json()),b=d.bch||{},w=d.wallets||{},sp=d.solopool||{};
   if(b.available){$('bchBlockHeight').textContent=`BCH Block ${Number(b.height).toLocaleString()}`;$('bchBlockHash').textContent=shortHash(b.hash);$('bchBlockAge').textContent='Live';$('bchBlockTx').textContent=b.transactions_24h==null?'—':Number(b.transactions_24h).toLocaleString();$('bchMempool').textContent=b.mempool_transactions==null?'—':Number(b.mempool_transactions).toLocaleString();$('bchDifficulty').textContent=fmtDifficulty(b.difficulty);$('bchBlockState').textContent='● LIVE';$('bchBlockState').className='status green'}
   else{$('bchBlockHeight').textContent='BCH unavailable';$('bchBlockState').textContent='● WAITING';$('bchBlockState').className='status orange'}
   $('btcBalance').textContent=w.btc?.balance!=null?`${Number(w.btc.balance).toFixed(8)} BTC`:customization.btc_wallet_address?(w.errors?.btc?'Address/API error':'Updating…'):'Not configured';$('bchBalance').textContent=w.bch?.balance!=null?`${Number(w.bch.balance).toFixed(8)} BCH`:customization.bch_wallet_address?(w.errors?.bch?'Address/API error':'Updating…'):'Not configured';
+  renderSoloChance('btc',d.solo_chances?.btc);renderSoloChance('bch',d.solo_chances?.bch);renderSoloPool('btc',sp.btc,!!customization.btc_solopool_address);renderSoloPool('bch',sp.bch,!!customization.bch_solopool_address);
  }catch(e){}
 }
 function closeBlockParty(){$('blockPartyModal').classList.remove('show')}
@@ -3228,6 +3306,6 @@ function connectWS(){
  ws.onmessage=e=>{let x=JSON.parse(e.data);if(x.type==='share')celebrate(x.miner_name,x.count);if(x.type==='best_share')celebrate(x.miner_name,1,'best_share');if(x.type==='block_found')blockFoundCelebrate(x);if(x.type==='rejected_share')toast(`❌ ${x.miner_name}: ${x.count} rejected`);if(x.type==='miner_offline')toast(`🔴 ${x.miner_name} went offline`);if(x.type==='miner_recovered')toast(`🟢 ${x.miner_name} recovered`);if(x.type==='temperature_warning')toast(`🌡️ ${x.miner_name}: ${x.value}°C`);if(x.type==='hashrate_drop')toast(`⚠️ ${x.miner_name}: hashrate drop`);if(x.type==='new_block')newBlockCelebrate(x)};
  ws.onclose=()=>{$('wsState').textContent='reconnecting…';setTimeout(connectWS,2000)}
 }
-load().then(loadLastBlockEvent);loadChainExtras();connectWS();refreshFleetBestRing();setInterval(load,10000);setInterval(refreshFleetBestRing,10000);setInterval(loadBlockStatus,20000);setInterval(loadChainExtras,30000);
+load().then(()=>{loadLastBlockEvent();loadChainExtras()});connectWS();refreshFleetBestRing();setInterval(load,10000);setInterval(refreshFleetBestRing,10000);setInterval(loadBlockStatus,20000);setInterval(loadChainExtras,30000);
 </script>
 </body></html>"""

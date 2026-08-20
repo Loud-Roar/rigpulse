@@ -5,10 +5,10 @@
 RigPulse is a local-first dashboard for mixed ASIC mining fleets. It polls miners
 directly over the LAN and keeps monitoring data local.
 
-## v0.4.5
+## v0.4.6
 
-This release expires automatic block-found celebrations after 12 hours and stops
-mislabeling the Avalon Nano 3 pool target as its current submitted-share difficulty.
+This release adds native BTC/BCH solo-mining odds and public SoloPool status to
+the main dashboard, configured with watch-only mining addresses and hashrates.
 
 ### Current miner families
 
@@ -68,7 +68,7 @@ The Umbrel Community App Store is published separately from this source reposito
 The production Umbrel package expects a public GHCR image:
 
 ```text
-ghcr.io/loud-roar/rigpulse:0.4.5
+ghcr.io/loud-roar/rigpulse:0.4.6
 ```
 
 Source repository: `https://github.com/Loud-Roar/rigpulse`
