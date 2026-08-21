@@ -140,8 +140,9 @@ latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
+latest_prices: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "source": "CoinGecko"}
 latest_solopool: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None, "errors": {}}
-app = FastAPI(title="RigPulse", version="0.4.8")
+app = FastAPI(title="RigPulse", version="0.4.9")
 
 
 def db():
@@ -1543,6 +1544,7 @@ async def startup():
     asyncio.create_task(block_watcher())
     asyncio.create_task(network_watcher())
     asyncio.create_task(bch_watcher())
+    asyncio.create_task(price_watcher())
     asyncio.create_task(solopool_watcher())
 
 
@@ -2075,6 +2077,7 @@ def chain_status():
         "btc": latest_block,
         "bch": latest_bch,
         "wallets": latest_wallets,
+        "prices": latest_prices,
         "solo_chances": {
             "btc": _solo_chance(cfg.get("btc_solo_hashrate", 0), cfg.get("btc_solo_hashrate_unit", "TH"), latest_block.get("difficulty")),
             "bch": _solo_chance(cfg.get("bch_solo_hashrate", 0), cfg.get("bch_solo_hashrate_unit", "TH"), latest_bch.get("difficulty")),
@@ -2232,6 +2235,35 @@ async def network_watcher():
                     "updated_at": int(time.time()),
                 }
         await asyncio.sleep(30)
+
+async def price_watcher():
+    global latest_prices
+    coin_ids = {"btc": "bitcoin", "bch": "bitcoin-cash", "alph": "alephium"}
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.0)) as client:
+                response = await client.get(
+                    "https://api.coingecko.com/api/v3/simple/price",
+                    params={
+                        "ids": ",".join(coin_ids.values()),
+                        "vs_currencies": "usd",
+                        "include_24hr_change": "true",
+                        "include_last_updated_at": "true",
+                    },
+                    headers={"accept": "application/json", "user-agent": "RigPulse/0.4.9"},
+                )
+                response.raise_for_status(); data = response.json()
+            prices: dict[str, Any] = {"updated_at": int(time.time()), "source": "CoinGecko", "available": True}
+            for symbol, coin_id in coin_ids.items():
+                entry = data.get(coin_id) or {}
+                prices[symbol] = {
+                    "usd": entry.get("usd"), "change_24h": entry.get("usd_24h_change"),
+                    "last_updated_at": entry.get("last_updated_at"),
+                }
+            latest_prices = prices
+        except Exception as e:
+            latest_prices = {**latest_prices, "available": any(latest_prices.get(k) for k in coin_ids), "error": str(e), "updated_at": int(time.time())}
+        await asyncio.sleep(60)
 
 async def bch_watcher():
     global latest_bch, latest_wallets
@@ -2761,7 +2793,7 @@ button,input,select{font:inherit}
 @media(max-width:700px){.alert-grid{grid-template-columns:1fr}}
 .event-table{width:100%;border-collapse:collapse}.event-table td,.event-table th{padding:8px;border-bottom:1px solid #172a40;text-align:left;font-size:12px}.event-table th{color:#8da0b8}.clickable{cursor:pointer}.sort-select{background:#0d1827;color:white;border:1px solid #22354a;padding:9px 12px;border-radius:10px}@media(max-width:800px){.detail-grid{grid-template-columns:repeat(2,1fr)}}
 
-.chain-strips{display:grid;grid-template-columns:1fr 1fr;gap:10px}.block-strip{margin-top:12px;padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center;overflow:hidden;position:relative;min-width:0}.wallet-strip{margin-top:10px;padding:10px 14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}.wallet-item{color:#8fa4bb;font-size:11px}.wallet-item b{color:#fff;font-size:14px;margin-left:5px}
+.chain-strips{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.block-strip{margin-top:12px;padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center;overflow:hidden;position:relative;min-width:0}.wallet-strip{margin-top:10px;padding:10px 14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}.wallet-item{color:#8fa4bb;font-size:11px}.wallet-item b{color:#fff;font-size:14px;margin-left:5px}.market-price{color:#fff!important;font-size:14px;font-weight:900}.price-change{font-size:10px;margin-left:5px}.price-change.up{color:#37e488}.price-change.down{color:#ff6577}.alph-strip .block-icon{color:#d576ff;background:rgba(213,118,255,.12);border-color:rgba(213,118,255,.35)}.alph-strip .block-height{color:#d576ff}
 .block-strip::after{content:"";position:absolute;inset:auto -10% -80% auto;width:240px;height:180px;background:radial-gradient(circle,rgba(247,147,26,.16),transparent 65%);pointer-events:none}
 .block-icon{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;font-size:25px;background:rgba(247,147,26,.12);border:1px solid rgba(247,147,26,.35)}
 .block-main{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.block-height{font-size:23px;font-weight:900}.block-hash{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:#8fa4bb;font-size:11px}
@@ -2801,7 +2833,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 .detail-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}.detail-tab.active{border-color:rgba(var(--accent-rgb),.8);box-shadow:0 0 0 1px rgba(var(--accent-rgb),.18)}
 @media(max-width:900px){.network-grid{grid-template-columns:repeat(2,1fr)}.hardware-grid{grid-template-columns:1fr 1fr}}
 
-@media(max-width:1100px){.metrics{grid-template-columns:repeat(3,1fr)}.grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:1100px){.metrics{grid-template-columns:repeat(3,1fr)}.chain-strips{grid-template-columns:repeat(2,minmax(0,1fr))}.grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:720px){
  body{overflow-x:hidden}
  .app{display:block}.sidebar{height:auto;position:sticky;z-index:15;display:block;padding:7px 9px;background:rgba(5,13,24,.94)}
@@ -2810,7 +2842,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
  .main{padding:9px 8px 35px}.top{margin-bottom:8px;gap:8px}.top h1{font-size:19px}.top>div{display:flex;gap:5px}.top .pill,.top .btn{padding:7px 9px;font-size:11px}
  .health-banner{margin:6px 0 8px;padding:7px 9px}.metrics{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
  .metric{padding:9px 8px;min-height:78px}.metric .label{font-size:9px}.metric .value{font-size:17px;margin-top:4px;line-height:1.1}.metric .sub{font-size:9px;line-height:1.1}
- .chain-strips{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.block-strip{padding:8px;grid-template-columns:1fr;gap:5px}.block-icon{width:30px;height:30px;font-size:17px}.block-height{font-size:13px}.block-hash{display:none}.block-meta{gap:4px 7px;font-size:8px}.block-meta span:nth-child(2),.block-meta span:nth-child(3),.block-meta span:nth-child(5){display:none}.solo-odds{font-size:10px;margin-top:6px;line-height:1.35}.solo-odds b{font-size:10px}.block-strip>.status{position:absolute;right:6px;top:6px;font-size:7px}.wallet-strip{padding:8px;gap:8px}.wallet-item{font-size:9px}.wallet-item b{font-size:11px}.solopool-strip{grid-template-columns:1fr 1fr;padding:8px;gap:7px}.solopool-title{grid-column:1/-1;font-size:11px}.solopool-item{font-size:8px;padding:8px}.solopool-hash{font-size:17px}.solopool-stats{gap:4px 7px}.solopool-highlights{gap:5px;margin-top:7px}.solopool-highlight{padding:6px}.solopool-highlight span{font-size:7px}.solopool-highlight b{font-size:15px}
+ .chain-strips{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.block-strip{padding:8px;grid-template-columns:1fr;gap:5px}.block-icon{width:30px;height:30px;font-size:17px}.block-height{font-size:13px}.block-hash{display:none}.block-meta{gap:4px 7px;font-size:8px}.block-meta span:nth-child(2),.block-meta span:nth-child(3),.block-meta span:nth-child(5){display:none}.solo-odds{font-size:10px;margin-top:6px;line-height:1.35}.solo-odds b{font-size:10px}.block-strip>.status{position:absolute;right:6px;top:6px;font-size:7px}.wallet-strip{padding:8px;gap:7px}.wallet-item{font-size:9px}.wallet-item b{font-size:11px}.market-price{font-size:11px}.price-change{font-size:8px}.solopool-strip{grid-template-columns:1fr 1fr;padding:8px;gap:7px}.solopool-title{grid-column:1/-1;font-size:11px}.solopool-item{font-size:8px;padding:8px}.solopool-hash{font-size:17px}.solopool-stats{gap:4px 7px}.solopool-highlights{gap:5px;margin-top:7px}.solopool-highlight{padding:6px}.solopool-highlight span{font-size:7px}.solopool-highlight b{font-size:15px}
  .stream{padding:9px;margin-top:8px}.stream-row{min-height:36px;gap:10px}.stream-item{min-width:42px;font-size:20px}
  .toolbar{gap:5px;margin:9px 0;overflow-x:auto;flex-wrap:nowrap;scrollbar-width:none}.toolbar::-webkit-scrollbar{display:none}.toolbar .pill{flex:0 0 auto;padding:7px 9px;font-size:10px}.toolbar .spacer{display:none}.sort-select{flex:0 0 auto;padding:7px;font-size:10px}.toolbar #onlineCount{flex:0 0 auto;font-size:10px;white-space:nowrap}
  .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.miner{padding:9px;min-width:0}.miner-head{display:block}.miner h3{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px}.miner .status{font-size:9px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.miner .sub{font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.miner .hash{font-size:19px;margin:7px 0 3px;white-space:nowrap}.miner .spark{height:21px;margin:1px 0 5px}.miner .spark svg{height:21px!important}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding-top:6px}.stats span{font-size:7px}.stats b{font-size:10px;overflow-wrap:anywhere}.stats>div:nth-child(3),.stats>div:nth-child(6),.stats>div:nth-child(7),.stats>div:nth-child(8){display:none}
@@ -2849,11 +2881,14 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
     <div class="block-icon">₿</div>
     <div>
       <div class="block-main"><span class="block-height" id="blockHeight">Bitcoin block —</span><span class="block-hash" id="blockHash">waiting for network…</span></div>
-      <div class="block-meta"><span>Age <b id="blockAge">—</b></span><span>Transactions <b id="blockTx">—</b></span><span>Size <b id="blockSize">—</b></span><span>Difficulty <b id="blockDifficulty">—</b></span><span>Source <b id="blockSource">mempool.space</b></span></div><div class="solo-odds">Solo odds: <b id="btcSoloOdds">Configure hashrate</b> · Expected <b id="btcSoloExpected">—</b></div>
+      <div class="block-meta"><span>BTC Price <b class="market-price" id="btcPrice">—</b><i class="price-change" id="btcPriceChange"></i></span><span>Age <b id="blockAge">—</b></span><span>Transactions <b id="blockTx">—</b></span><span>Size <b id="blockSize">—</b></span><span>Difficulty <b id="blockDifficulty">—</b></span><span>Source <b id="blockSource">mempool.space</b></span></div><div class="solo-odds">Solo odds: <b id="btcSoloOdds">Configure hashrate</b> · Expected <b id="btcSoloExpected">—</b></div>
     </div>
     <div class="status green" id="blockState">● LIVE</div>
   </section><section class="card block-strip" id="bchBlockStrip">
-    <div class="block-icon">₿</div><div><div class="block-main"><span class="block-height" id="bchBlockHeight">BCH block —</span><span class="block-hash" id="bchBlockHash">waiting for network…</span></div><div class="block-meta"><span>Updated <b id="bchBlockAge">—</b></span><span>24h Transactions <b id="bchBlockTx">—</b></span><span>Mempool <b id="bchMempool">—</b></span><span>Difficulty <b id="bchDifficulty">—</b></span><span>Source <b>Blockchair</b></span></div><div class="solo-odds">Solo odds: <b id="bchSoloOdds">Configure hashrate</b> · Expected <b id="bchSoloExpected">—</b></div></div><div class="status orange" id="bchBlockState">● WAITING</div>
+    <div class="block-icon">₿</div><div><div class="block-main"><span class="block-height" id="bchBlockHeight">BCH block —</span><span class="block-hash" id="bchBlockHash">waiting for network…</span></div><div class="block-meta"><span>BCH Price <b class="market-price" id="bchPrice">—</b><i class="price-change" id="bchPriceChange"></i></span><span>Updated <b id="bchBlockAge">—</b></span><span>24h Transactions <b id="bchBlockTx">—</b></span><span>Mempool <b id="bchMempool">—</b></span><span>Difficulty <b id="bchDifficulty">—</b></span><span>Source <b>Blockchair</b></span></div><div class="solo-odds">Solo odds: <b id="bchSoloOdds">Configure hashrate</b> · Expected <b id="bchSoloExpected">—</b></div></div><div class="status orange" id="bchBlockState">● WAITING</div>
+  </section>
+  <section class="card block-strip alph-strip" id="alphMarketBlock">
+    <div class="block-icon">A</div><div><div class="block-main"><span class="block-height">Alephium</span><span class="block-hash">ALPH market</span></div><div class="block-meta"><span>ALPH Price <b class="market-price" id="alphPrice">—</b><i class="price-change" id="alphPriceChange"></i></span><span>Currency <b>USD</b></span><span>Source <b>CoinGecko</b></span></div></div><div class="status orange" id="alphPriceState">● WAITING</div>
   </section></div>
   <section class="card wallet-strip" id="walletStrip"><b>Public Wallet Balances</b><span class="wallet-item">BTC <b id="btcBalance">Not configured</b></span><span class="wallet-item">BCH <b id="bchBalance">Not configured</b></span></section>
   <section class="card solopool-strip" id="solopoolStrip"><div class="solopool-title">SoloPool Status</div><div class="solopool-item"><b>BTC POOL</b><div id="btcSoloPoolStatus"><div class="solopool-hash">—</div><div class="solopool-stats"><span>Not configured</span></div></div></div><div class="solopool-item bch"><b>BCH POOL</b><div id="bchSoloPoolStatus"><div class="solopool-hash">—</div><div class="solopool-stats"><span>Not configured</span></div></div></div></section>
@@ -3239,13 +3274,15 @@ function expectedTime(seconds){if(seconds==null||!Number.isFinite(Number(seconds
 function renderSoloChance(coin,c){const odds=$(coin+'SoloOdds'),expected=$(coin+'SoloExpected');if(!c){odds.textContent='Configure hashrate';expected.textContent='—';return}odds.textContent=`24h ${chanceOneIn(c.chance_24h_pct)} chance (${chancePct(c.chance_24h_pct)}) · 7d ${chanceOneIn(c.chance_7d_pct)} chance (${chancePct(c.chance_7d_pct)}) · 30d ${chanceOneIn(c.chance_30d_pct)} chance (${chancePct(c.chance_30d_pct)})`;expected.textContent=expectedTime(c.expected_seconds)}
 function renderSoloPool(coin,p,configured){const el=$(coin+'SoloPoolStatus');if(!p){el.innerHTML=`<div class="solopool-hash">—</div><div class="solopool-stats"><span>${configured?'Waiting for API…':'Not configured'}</span></div>`;return}el.innerHTML=`<div class="solopool-hash">${hashFromHs(p.hashrate)}</div><div class="solopool-stats"><span>Current hashrate</span><span>Average <b>${hashFromHs(p.average_hashrate)}</b></span><span>Workers <b>${p.online_workers??0}/${p.total_workers??0}</b></span><span>Last share <b>${blockAge(p.last_share)}</b></span></div><div class="solopool-highlights"><div class="solopool-highlight"><span>Best Share</span><b>${fmtShare(p.best_share)}</b></div><div class="solopool-highlight"><span>Blocks Found</span><b>${p.total_blocks??0}</b></div></div>`}
 function hashFromHs(v){if(v==null)return'—';let n=Number(v);if(n>=1e15)return(n/1e15).toFixed(2)+' PH/s';if(n>=1e12)return(n/1e12).toFixed(2)+' TH/s';if(n>=1e9)return(n/1e9).toFixed(2)+' GH/s';return n.toLocaleString()+' H/s'}
+function renderPrice(symbol,p){const value=$(symbol+'Price'),change=$(symbol+'PriceChange');if(!p||p.usd==null){value.textContent='Unavailable';change.textContent='';change.className='price-change';if(symbol==='alph'){$('alphPriceState').textContent='● WAITING';$('alphPriceState').className='status orange'}return}const n=Number(p.usd),digits=n>=1000?0:n>=1?2:n>=.01?3:5;value.textContent=n.toLocaleString(undefined,{style:'currency',currency:'USD',minimumFractionDigits:digits,maximumFractionDigits:digits});const c=Number(p.change_24h);if(Number.isFinite(c)){change.textContent=`${c>=0?'+':''}${c.toFixed(2)}% 24h`;change.className=`price-change ${c>=0?'up':'down'}`}else{change.textContent='';change.className='price-change'}if(symbol==='alph'){$('alphPriceState').textContent='● LIVE';$('alphPriceState').className='status green'}}
 
 async function loadChainExtras(){
  try{
-  const d=await fetch('/api/chain-status').then(r=>r.json()),b=d.bch||{},w=d.wallets||{},sp=d.solopool||{};
+  const d=await fetch('/api/chain-status').then(r=>r.json()),b=d.bch||{},w=d.wallets||{},sp=d.solopool||{},prices=d.prices||{};
   if(b.available){$('bchBlockHeight').textContent=`BCH Block ${Number(b.height).toLocaleString()}`;$('bchBlockHash').textContent=shortHash(b.hash);$('bchBlockAge').textContent='Live';$('bchBlockTx').textContent=b.transactions_24h==null?'—':Number(b.transactions_24h).toLocaleString();$('bchMempool').textContent=b.mempool_transactions==null?'—':Number(b.mempool_transactions).toLocaleString();$('bchDifficulty').textContent=fmtDifficulty(b.difficulty);$('bchBlockState').textContent='● LIVE';$('bchBlockState').className='status green'}
   else{$('bchBlockHeight').textContent='BCH unavailable';$('bchBlockState').textContent='● WAITING';$('bchBlockState').className='status orange'}
   $('btcBalance').textContent=w.btc?.balance!=null?`${Number(w.btc.balance).toFixed(8)} BTC`:customization.btc_wallet_address?(w.errors?.btc?'Address/API error':'Updating…'):'Not configured';$('bchBalance').textContent=w.bch?.balance!=null?`${Number(w.bch.balance).toFixed(8)} BCH`:customization.bch_wallet_address?(w.errors?.bch?'Address/API error':'Updating…'):'Not configured';
+  renderPrice('btc',prices.btc);renderPrice('bch',prices.bch);renderPrice('alph',prices.alph);
   renderSoloChance('btc',d.solo_chances?.btc);renderSoloChance('bch',d.solo_chances?.bch);renderSoloPool('btc',sp.btc,!!customization.btc_solopool_address);renderSoloPool('bch',sp.bch,!!customization.bch_solopool_address);
  }catch(e){}
 }
