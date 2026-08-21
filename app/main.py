@@ -142,7 +142,7 @@ latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
 latest_prices: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "source": "CoinGecko"}
 latest_solopool: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None, "errors": {}}
-app = FastAPI(title="RigPulse", version="0.4.9")
+app = FastAPI(title="RigPulse", version="0.5.0")
 
 
 def db():
@@ -2250,7 +2250,7 @@ async def price_watcher():
                         "include_24hr_change": "true",
                         "include_last_updated_at": "true",
                     },
-                    headers={"accept": "application/json", "user-agent": "RigPulse/0.4.9"},
+                    headers={"accept": "application/json", "user-agent": "RigPulse/0.5.0"},
                 )
                 response.raise_for_status(); data = response.json()
             prices: dict[str, Any] = {"updated_at": int(time.time()), "source": "CoinGecko", "available": True}
@@ -2755,6 +2755,7 @@ body.theme-liquid-lab::after{opacity:.06}
 button,input,select{font:inherit}
 .app{display:grid;grid-template-columns:180px 1fr;min-height:100vh}
 .sidebar{border-right:1px solid rgba(90,130,180,.18);padding:22px 14px;position:sticky;top:0;height:100vh;background:rgba(5,13,24,.70);backdrop-filter:blur(var(--glass-blur))}
+body.sidebar-hidden .app{grid-template-columns:1fr}body.sidebar-hidden .sidebar{display:none}body.sidebar-hidden .main{max-width:none}
 .brand{font-size:23px;font-weight:800;margin:4px 8px 25px;color:white}.brand span{color:var(--blue)}
 .nav button{width:100%;text-align:left;border:0;background:transparent;color:#c9d6e5;padding:12px 13px;border-radius:10px;margin:2px 0;cursor:pointer}.nav button.active,.nav button:hover{background:#0c2742;color:#55c1ff}
 .main{padding:18px 22px 60px;max-width:1600px;width:100%}
@@ -2762,6 +2763,7 @@ button,input,select{font:inherit}
 .top h1{margin:0;font-size:24px}.pill,.btn{border:1px solid #22354a;background:#0d1827;color:white;padding:9px 12px;border-radius:10px}
 .btn{cursor:pointer}.btn.primary{background:#0877e8;border-color:#0877e8}.btn.danger{background:#35161b;border-color:#70242c}
 .metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+.dashboard-panels{display:grid}.layout-box{position:relative}.layout-size-btn{display:none;position:absolute;z-index:12;right:8px;bottom:8px;border:1px solid #4b7399;background:#10243a;color:#bde8ff;border-radius:7px;padding:3px 7px;cursor:pointer;font-size:12px}.layout-edit .layout-box{outline:2px dashed rgba(95,200,255,.65);outline-offset:2px;cursor:grab}.layout-edit .layout-box:active{cursor:grabbing}.layout-edit .layout-size-btn{display:block}.layout-edit .layout-box.dragging{opacity:.48}.metrics>.layout-wide{grid-column:span 2}.metrics>.layout-full{grid-column:1/-1}.chain-strips>.layout-wide{grid-column:span 2}.chain-strips>.layout-full{grid-column:1/-1}
 .card{background:linear-gradient(180deg,rgba(13,27,44,var(--card-opacity)),rgba(6,15,27,var(--card-opacity)));border:1px solid rgba(var(--accent-rgb),.20);border-radius:14px;box-shadow:0 12px 34px rgba(0,0,0,.28);backdrop-filter:blur(var(--glass-blur));-webkit-backdrop-filter:blur(var(--glass-blur))}
 .metric{min-width:0;padding:14px}.metric .label{color:#b8c5d5;font-size:12px;line-height:1.25}.metric .value{font-size:clamp(20px,2vw,26px);font-weight:800;margin-top:7px;overflow-wrap:anywhere}.metric .sub{line-height:1.25}.blue{color:#5fc8ff}.green{color:var(--green)}.orange{color:var(--orange)}.purple{color:#d576ff}
 .stream{padding:13px 16px;margin-top:12px;overflow:hidden;position:relative}.stream-title{display:flex;justify-content:space-between}.stream-row{display:flex;gap:20px;align-items:center;min-height:48px;color:#c8d4e2;overflow:hidden}
@@ -2841,6 +2843,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
  .nav button{flex:0 0 auto;width:auto;margin:0;padding:7px 9px;font-size:11px;white-space:nowrap}.nav-sep{display:none}
  .main{padding:9px 8px 35px}.top{margin-bottom:8px;gap:8px}.top h1{font-size:19px}.top>div{display:flex;gap:5px}.top .pill,.top .btn{padding:7px 9px;font-size:11px}
  .health-banner{margin:6px 0 8px;padding:7px 9px}.metrics{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+ .metrics>.layout-full,.chain-strips>.layout-full{grid-column:1/-1}.layout-size-btn{font-size:10px;padding:2px 5px}
  .metric{padding:9px 8px;min-height:78px}.metric .label{font-size:9px}.metric .value{font-size:17px;margin-top:4px;line-height:1.1}.metric .sub{font-size:9px;line-height:1.1}
  .chain-strips{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.block-strip{padding:8px;grid-template-columns:1fr;gap:5px}.block-icon{width:30px;height:30px;font-size:17px}.block-height{font-size:13px}.block-hash{display:none}.block-meta{gap:4px 7px;font-size:8px}.block-meta span:nth-child(2),.block-meta span:nth-child(3),.block-meta span:nth-child(5){display:none}.solo-odds{font-size:10px;margin-top:6px;line-height:1.35}.solo-odds b{font-size:10px}.block-strip>.status{position:absolute;right:6px;top:6px;font-size:7px}.wallet-strip{padding:8px;gap:7px}.wallet-item{font-size:9px}.wallet-item b{font-size:11px}.market-price{font-size:11px}.price-change{font-size:8px}.solopool-strip{grid-template-columns:1fr 1fr;padding:8px;gap:7px}.solopool-title{grid-column:1/-1;font-size:11px}.solopool-item{font-size:8px;padding:8px}.solopool-hash{font-size:17px}.solopool-stats{gap:4px 7px}.solopool-highlights{gap:5px;margin-top:7px}.solopool-highlight{padding:6px}.solopool-highlight span{font-size:7px}.solopool-highlight b{font-size:15px}
  .stream{padding:9px;margin-top:8px}.stream-row{min-height:36px;gap:10px}.stream-item{min-width:42px;font-size:20px}
@@ -2867,17 +2870,17 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
   </div>
 </aside>
 <main class="main">
-  <div class="top"><h1>Fleet Dashboard</h1><div><button class="pill" id="replayBlockBtn" onclick="replayLastBlock()" style="display:none">🎊 Replay Block</button> <button class="pill" onclick="openSettings()" id="emojiBtn">🎉 Emoji</button> <button class="btn primary" onclick="openAdd()">+ Add Miner</button></div></div>
+  <div class="top"><h1>Fleet Dashboard</h1><div><button class="pill" id="menuToggleBtn" onclick="toggleSidebar()">☰ Hide Menu</button> <button class="pill" id="layoutToggleBtn" onclick="toggleLayoutMode()">↔ Arrange</button> <button class="pill" id="replayBlockBtn" onclick="replayLastBlock()" style="display:none">🎊 Replay Block</button> <button class="pill" onclick="openSettings()" id="emojiBtn">🎉 Emoji</button> <button class="btn primary" onclick="openAdd()">+ Add Miner</button></div></div>
   <div id="healthBanner" class="health-banner"><div class="health-dot">●</div><div><div class="health-title">Fleet Health</div><div class="health-detail">Checking miners…</div></div></div>
-  <section class="metrics">
-    <div class="card metric"><div class="label">SHA-256 Hashrate</div><div class="value blue" id="shaHash">--</div><div class="sub" id="shaCount"></div></div>
-    <div class="card metric"><div class="label">Blake3 / Alephium</div><div class="value purple" id="blakeHash">--</div><div class="sub" id="blakeCount"></div></div>
-    <div class="card metric"><div class="label">Shares Today</div><div class="value purple" id="sharesToday">--</div><div class="sub" id="sharesSession"></div></div>
-    <div class="card metric"><div class="label">Avg Temperature</div><div class="value orange" id="temp">--°C</div><div class="sub" id="fleetOnline"></div></div>
-    <div class="card metric"><div class="label">Known Power</div><div class="value" id="power">--</div><div class="sub" id="unknownPower"></div></div>
-    <div class="card metric"><div class="label">Fleet Best Share</div><div class="value green" id="fleetBestShare">--</div><div class="sub" id="fleetBestMiner">No reported best share</div></div>
+  <section class="metrics" id="summaryMetrics">
+    <div class="card metric" id="metricSha"><div class="label">SHA-256 Hashrate</div><div class="value blue" id="shaHash">--</div><div class="sub" id="shaCount"></div></div>
+    <div class="card metric" id="metricBlake"><div class="label">Blake3 / Alephium</div><div class="value purple" id="blakeHash">--</div><div class="sub" id="blakeCount"></div></div>
+    <div class="card metric" id="metricShares"><div class="label">Shares Today</div><div class="value purple" id="sharesToday">--</div><div class="sub" id="sharesSession"></div></div>
+    <div class="card metric" id="metricTemp"><div class="label">Avg Temperature</div><div class="value orange" id="temp">--°C</div><div class="sub" id="fleetOnline"></div></div>
+    <div class="card metric" id="metricPower"><div class="label">Known Power</div><div class="value" id="power">--</div><div class="sub" id="unknownPower"></div></div>
+    <div class="card metric" id="metricBest"><div class="label">Fleet Best Share</div><div class="value green" id="fleetBestShare">--</div><div class="sub" id="fleetBestMiner">No reported best share</div></div>
   </section>
-  <div class="chain-strips"><section class="card block-strip" id="blockStrip">
+  <div class="chain-strips" id="chainStrips"><section class="card block-strip" id="blockStrip">
     <div class="block-icon">₿</div>
     <div>
       <div class="block-main"><span class="block-height" id="blockHeight">Bitcoin block —</span><span class="block-hash" id="blockHash">waiting for network…</span></div>
@@ -2890,12 +2893,12 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
   <section class="card block-strip alph-strip" id="alphMarketBlock">
     <div class="block-icon">A</div><div><div class="block-main"><span class="block-height">Alephium</span><span class="block-hash">ALPH market</span></div><div class="block-meta"><span>ALPH Price <b class="market-price" id="alphPrice">—</b><i class="price-change" id="alphPriceChange"></i></span><span>Currency <b>USD</b></span><span>Source <b>CoinGecko</b></span></div></div><div class="status orange" id="alphPriceState">● WAITING</div>
   </section></div>
-  <section class="card wallet-strip" id="walletStrip"><b>Public Wallet Balances</b><span class="wallet-item">BTC <b id="btcBalance">Not configured</b></span><span class="wallet-item">BCH <b id="bchBalance">Not configured</b></span></section>
+  <div class="dashboard-panels" id="dashboardPanels"><section class="card wallet-strip" id="walletStrip"><b>Public Wallet Balances</b><span class="wallet-item">BTC <b id="btcBalance">Not configured</b></span><span class="wallet-item">BCH <b id="bchBalance">Not configured</b></span></section>
   <section class="card solopool-strip" id="solopoolStrip"><div class="solopool-title">SoloPool Status</div><div class="solopool-item"><b>BTC POOL</b><div id="btcSoloPoolStatus"><div class="solopool-hash">—</div><div class="solopool-stats"><span>Not configured</span></div></div></div><div class="solopool-item bch"><b>BCH POOL</b><div id="bchSoloPoolStatus"><div class="solopool-hash">—</div><div class="solopool-stats"><span>Not configured</span></div></div></div></section>
-  <section class="card stream">
+  <section class="card stream" id="shareStream">
     <div class="stream-title"><b>🟢 Live Share Stream</b><small id="wsState">connecting…</small></div>
     <div class="stream-row" id="stream"><span style="color:#72859d">Waiting for submitted shares…</span></div>
-  </section>
+  </section></div>
   <div class="toolbar">
     <button class="pill" onclick="filter='all';render()">All Miners</button>
     <button class="pill" onclick="filter='SHA-256';render()">SHA-256</button>
@@ -2955,7 +2958,7 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 <div class="row"><div class="field"><label>BTC public wallet address (optional)</label><input id="cBtcWallet" placeholder="bc1…"><div class="sub">Watch-only balance. Never enter a seed phrase or private key.</div></div><div class="field"><label>BCH public wallet address (optional)</label><input id="cBchWallet" placeholder="bitcoincash:q…"><div class="sub">Watch-only balance. Never enter a seed phrase or private key.</div></div></div>
 <div class="row"><div class="field"><label>BTC SoloPool mining address (optional)</label><input id="cBtcSoloPool" placeholder="bc1…"><div class="sub">Loads public BTC SoloPool miner status.</div></div><div class="field"><label>BCH SoloPool mining address (optional)</label><input id="cBchSoloPool" placeholder="q…"><div class="sub">Loads public status and enables pool-side block detection.</div></div></div>
 <div class="row"><div class="field"><label>BTC solo-mining hashrate</label><div style="display:grid;grid-template-columns:1fr 90px;gap:7px"><input id="cBtcSoloHash" type="number" min="0" step="any" placeholder="476"><select id="cBtcSoloUnit"><option value="TH">TH/s</option><option value="PH">PH/s</option></select></div><div class="sub">Used only for probability calculations.</div></div><div class="field"><label>BCH solo-mining hashrate</label><div style="display:grid;grid-template-columns:1fr 90px;gap:7px"><input id="cBchSoloHash" type="number" min="0" step="any" placeholder="476"><select id="cBchSoloUnit"><option value="TH">TH/s</option><option value="PH">PH/s</option></select></div><div class="sub">Enter the hashrate actually pointed at BCH.</div></div></div>
-<div class="actions"><button class="btn" onclick="resetCustomization()">Reset</button><button class="btn primary" onclick="saveCustomization()">Save Customization</button></div>
+<div class="actions"><button class="btn" onclick="resetDashboardLayout()">Reset Box Layout</button><button class="btn" onclick="resetCustomization()">Reset Theme</button><button class="btn primary" onclick="saveCustomization()">Save Customization</button></div>
 </div></div>
 
 <div class="modal block-party" id="blockPartyModal"><div class="dialog card block-party-panel"><div class="block-party-title">BLOCK FOUND!</div><div class="block-party-miner" id="blockPartyMiner">Your miner found a block</div><div class="sub" id="blockPartyDetails" style="margin-top:8px"></div><div class="actions"><button class="btn" onclick="closeBlockParty()">Close</button><button class="btn primary" onclick="replayLastBlock()">Replay Party</button></div></div></div>
@@ -3011,6 +3014,14 @@ body.compact .miner{padding:12px} body.compact .miner .hash{margin:10px 0 5px;fo
 </div></div>
 <script>
 let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:"",btc_solopool_address:"",bch_solopool_address:"",btc_solo_hashrate:0,btc_solo_hashrate_unit:"TH",bch_solo_hashrate:0,bch_solo_hashrate_unit:"TH"}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
+const LAYOUT_KEY='rigpulse-dashboard-layout-v1',SIDEBAR_KEY='rigpulse-sidebar-hidden';let layoutEditing=false,draggedLayoutBox=null,defaultLayout={};
+function toggleSidebar(force){const hidden=force??!document.body.classList.contains('sidebar-hidden');document.body.classList.toggle('sidebar-hidden',hidden);localStorage.setItem(SIDEBAR_KEY,hidden?'1':'0');$('menuToggleBtn').textContent=hidden?'☰ Show Menu':'☰ Hide Menu'}
+function layoutContainers(){return ['summaryMetrics','chainStrips','dashboardPanels'].map($).filter(Boolean)}
+function saveDashboardLayout(){const state={order:{},sizes:{}};for(const c of layoutContainers()){state.order[c.id]=[...c.children].map(x=>x.id);for(const box of c.children)state.sizes[box.id]=box.classList.contains('layout-full')?'full':box.classList.contains('layout-wide')?'wide':'normal'}localStorage.setItem(LAYOUT_KEY,JSON.stringify(state))}
+function cycleBoxSize(box){const next=box.classList.contains('layout-wide')?'full':box.classList.contains('layout-full')?'normal':'wide';box.classList.toggle('layout-wide',next==='wide');box.classList.toggle('layout-full',next==='full');saveDashboardLayout();toast(`Box size: ${next}`)}
+function setupDashboardLayout(){for(const c of layoutContainers()){defaultLayout[c.id]=[...c.children].map(x=>x.id);for(const box of c.children){box.classList.add('layout-box');box.draggable=false;if(c.id!=='dashboardPanels'&&!box.querySelector('.layout-size-btn')){const b=document.createElement('button');b.className='layout-size-btn';b.type='button';b.title='Cycle box width: normal, wide, full';b.textContent='↔ Resize';b.onclick=e=>{e.stopPropagation();cycleBoxSize(box)};box.appendChild(b)}box.addEventListener('dragstart',()=>{if(!layoutEditing)return;draggedLayoutBox=box;box.classList.add('dragging')});box.addEventListener('dragend',()=>{box.classList.remove('dragging');draggedLayoutBox=null;saveDashboardLayout()})}c.addEventListener('dragover',e=>{if(!layoutEditing||!draggedLayoutBox||draggedLayoutBox.parentElement!==c)return;e.preventDefault();const target=e.target.closest('.layout-box');if(!target||target===draggedLayoutBox||target.parentElement!==c)return;const r=target.getBoundingClientRect(),before=e.clientY<r.top+r.height/2&&(Math.abs(e.clientY-(r.top+r.height/2))>r.height*.2||e.clientX<r.left+r.width/2);c.insertBefore(draggedLayoutBox,before?target:target.nextSibling)})}try{const state=JSON.parse(localStorage.getItem(LAYOUT_KEY)||'{}');for(const c of layoutContainers()){for(const id of state.order?.[c.id]||[]){const box=$(id);if(box&&box.parentElement===c)c.appendChild(box)}for(const box of c.children){const size=state.sizes?.[box.id];box.classList.toggle('layout-wide',size==='wide');box.classList.toggle('layout-full',size==='full')}}}catch(e){}}
+function toggleLayoutMode(){layoutEditing=!layoutEditing;document.body.classList.toggle('layout-edit',layoutEditing);for(const c of layoutContainers())for(const box of c.children)box.draggable=layoutEditing;$('layoutToggleBtn').textContent=layoutEditing?'✓ Finish Layout':'↔ Arrange';toast(layoutEditing?'Drag boxes to rearrange; use Resize to change width':'Dashboard layout saved')}
+function resetDashboardLayout(){localStorage.removeItem(LAYOUT_KEY);for(const c of layoutContainers()){for(const id of defaultLayout[c.id]||[]){const box=$(id);if(box)c.appendChild(box)}for(const box of c.children)box.classList.remove('layout-wide','layout-full')}toast('Dashboard box layout reset')}
 const $=id=>document.getElementById(id);
 function fmt(v,d=1){return v==null?'--':Number(v).toFixed(d)}
 
@@ -3275,13 +3286,14 @@ function renderSoloChance(coin,c){const odds=$(coin+'SoloOdds'),expected=$(coin+
 function renderSoloPool(coin,p,configured){const el=$(coin+'SoloPoolStatus');if(!p){el.innerHTML=`<div class="solopool-hash">—</div><div class="solopool-stats"><span>${configured?'Waiting for API…':'Not configured'}</span></div>`;return}el.innerHTML=`<div class="solopool-hash">${hashFromHs(p.hashrate)}</div><div class="solopool-stats"><span>Current hashrate</span><span>Average <b>${hashFromHs(p.average_hashrate)}</b></span><span>Workers <b>${p.online_workers??0}/${p.total_workers??0}</b></span><span>Last share <b>${blockAge(p.last_share)}</b></span></div><div class="solopool-highlights"><div class="solopool-highlight"><span>Best Share</span><b>${fmtShare(p.best_share)}</b></div><div class="solopool-highlight"><span>Blocks Found</span><b>${p.total_blocks??0}</b></div></div>`}
 function hashFromHs(v){if(v==null)return'—';let n=Number(v);if(n>=1e15)return(n/1e15).toFixed(2)+' PH/s';if(n>=1e12)return(n/1e12).toFixed(2)+' TH/s';if(n>=1e9)return(n/1e9).toFixed(2)+' GH/s';return n.toLocaleString()+' H/s'}
 function renderPrice(symbol,p){const value=$(symbol+'Price'),change=$(symbol+'PriceChange');if(!p||p.usd==null){value.textContent='Unavailable';change.textContent='';change.className='price-change';if(symbol==='alph'){$('alphPriceState').textContent='● WAITING';$('alphPriceState').className='status orange'}return}const n=Number(p.usd),digits=n>=1000?0:n>=1?2:n>=.01?3:5;value.textContent=n.toLocaleString(undefined,{style:'currency',currency:'USD',minimumFractionDigits:digits,maximumFractionDigits:digits});const c=Number(p.change_24h);if(Number.isFinite(c)){change.textContent=`${c>=0?'+':''}${c.toFixed(2)}% 24h`;change.className=`price-change ${c>=0?'up':'down'}`}else{change.textContent='';change.className='price-change'}if(symbol==='alph'){$('alphPriceState').textContent='● LIVE';$('alphPriceState').className='status green'}}
+function walletText(entry,price,symbol){if(entry?.balance==null)return null;const amount=Number(entry.balance),usd=Number(price?.usd),fiat=Number.isFinite(usd)?` · ${(amount*usd).toLocaleString(undefined,{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2})}`:'';return `${amount.toFixed(8)} ${symbol}${fiat}`}
 
 async function loadChainExtras(){
  try{
   const d=await fetch('/api/chain-status').then(r=>r.json()),b=d.bch||{},w=d.wallets||{},sp=d.solopool||{},prices=d.prices||{};
   if(b.available){$('bchBlockHeight').textContent=`BCH Block ${Number(b.height).toLocaleString()}`;$('bchBlockHash').textContent=shortHash(b.hash);$('bchBlockAge').textContent='Live';$('bchBlockTx').textContent=b.transactions_24h==null?'—':Number(b.transactions_24h).toLocaleString();$('bchMempool').textContent=b.mempool_transactions==null?'—':Number(b.mempool_transactions).toLocaleString();$('bchDifficulty').textContent=fmtDifficulty(b.difficulty);$('bchBlockState').textContent='● LIVE';$('bchBlockState').className='status green'}
   else{$('bchBlockHeight').textContent='BCH unavailable';$('bchBlockState').textContent='● WAITING';$('bchBlockState').className='status orange'}
-  $('btcBalance').textContent=w.btc?.balance!=null?`${Number(w.btc.balance).toFixed(8)} BTC`:customization.btc_wallet_address?(w.errors?.btc?'Address/API error':'Updating…'):'Not configured';$('bchBalance').textContent=w.bch?.balance!=null?`${Number(w.bch.balance).toFixed(8)} BCH`:customization.bch_wallet_address?(w.errors?.bch?'Address/API error':'Updating…'):'Not configured';
+  $('btcBalance').textContent=walletText(w.btc,prices.btc,'BTC')??(customization.btc_wallet_address?(w.errors?.btc?'Address/API error':'Updating…'):'Not configured');$('bchBalance').textContent=walletText(w.bch,prices.bch,'BCH')??(customization.bch_wallet_address?(w.errors?.bch?'Address/API error':'Updating…'):'Not configured');
   renderPrice('btc',prices.btc);renderPrice('bch',prices.bch);renderPrice('alph',prices.alph);
   renderSoloChance('btc',d.solo_chances?.btc);renderSoloChance('bch',d.solo_chances?.bch);renderSoloPool('btc',sp.btc,!!customization.btc_solopool_address);renderSoloPool('bch',sp.bch,!!customization.bch_solopool_address);
  }catch(e){}
@@ -3351,6 +3363,6 @@ function connectWS(){
  ws.onmessage=e=>{let x=JSON.parse(e.data);if(x.type==='share')celebrate(x.miner_name,x.count);if(x.type==='best_share')celebrate(x.miner_name,1,'best_share');if(x.type==='block_found')blockFoundCelebrate(x);if(x.type==='rejected_share')toast(`❌ ${x.miner_name}: ${x.count} rejected`);if(x.type==='miner_offline')toast(`🔴 ${x.miner_name} went offline`);if(x.type==='miner_recovered')toast(`🟢 ${x.miner_name} recovered`);if(x.type==='temperature_warning')toast(`🌡️ ${x.miner_name}: ${x.value}°C`);if(x.type==='hashrate_drop')toast(`⚠️ ${x.miner_name}: hashrate drop`);if(x.type==='new_block')newBlockCelebrate(x)};
  ws.onclose=()=>{$('wsState').textContent='reconnecting…';setTimeout(connectWS,2000)}
 }
-load().then(()=>{loadLastBlockEvent();loadChainExtras()});connectWS();refreshFleetBestRing();setInterval(load,10000);setInterval(refreshFleetBestRing,10000);setInterval(loadBlockStatus,20000);setInterval(loadChainExtras,30000);
+setupDashboardLayout();toggleSidebar(localStorage.getItem(SIDEBAR_KEY)==='1');load().then(()=>{loadLastBlockEvent();loadChainExtras()});connectWS();refreshFleetBestRing();setInterval(load,10000);setInterval(refreshFleetBestRing,10000);setInterval(loadBlockStatus,20000);setInterval(loadChainExtras,30000);
 </script>
 </body></html>"""
