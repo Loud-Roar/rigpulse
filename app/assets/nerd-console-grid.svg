@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900">
+  <defs>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#42dfff" stroke-opacity=".09" stroke-width="1"/>
+      <circle cx="0" cy="0" r="2" fill="#b7f3ff" fill-opacity=".18"/>
+    </pattern>
+    <radialGradient id="glow"><stop stop-color="#13657d" stop-opacity=".45"/><stop offset="1" stop-color="#020609" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1600" height="900" fill="#020609"/>
+  <rect width="1600" height="900" fill="url(#grid)"/>
+  <ellipse cx="800" cy="300" rx="650" ry="360" fill="url(#glow)"/>
+  <g fill="none" stroke="#6adff2" stroke-opacity=".13" stroke-width="2">
+    <ellipse cx="800" cy="330" rx="470" ry="245"/>
+    <ellipse cx="800" cy="330" rx="470" ry="150"/>
+    <ellipse cx="800" cy="330" rx="210" ry="245"/>
+    <path d="M330 330h940M800 85v490"/>
+  </g>
+  <g fill="#82e8f5" fill-opacity=".11">
+    <path d="M470 218l88-75 110 13 50 52-43 39-87-8-42 55-78-21-43-34z"/>
+    <path d="M708 295l75-47 92 17 34 59-43 40 20 98-63 82-50-72 8-68-53-42z"/>
+    <path d="M934 198l104-46 137 31 52 70-64 39-48-22-56 61-98-17-53-58z"/>
+    <path d="M1092 390l74-31 63 36-23 61-91 12-42-35z"/>
+  </g>
+</svg>
