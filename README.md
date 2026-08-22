@@ -5,12 +5,12 @@
 RigPulse is a local-first dashboard for mixed ASIC mining fleets. It polls miners
 directly over the LAN and keeps monitoring data local.
 
-## v0.5.3
+## v0.5.4
 
-This corrective release stops the periodic Pool Miners flicker and gives Nerd
-Console a denser, calmer instrument layout on wide displays. Pool worker cards
-now update in place, unused graph space is removed, and a lone configured pool
-uses the full SoloPool panel.
+This visual polish release gives Nerd Console a unified black and green ASIC
+appliance design. Green-phosphor LCD values, dark instrument panels, restrained
+accents, and condensed technical typography now extend across miners, pool
+status, wallets, network blocks, navigation, and fleet summaries.
 
 ### Current miner families
 
@@ -71,7 +71,7 @@ The Umbrel Community App Store is published separately from this source reposito
 The production Umbrel package expects a public GHCR image:
 
 ```text
-ghcr.io/loud-roar/rigpulse:0.5.3
+ghcr.io/loud-roar/rigpulse:0.5.4
 ```
 
 Source repository: `https://github.com/Loud-Roar/rigpulse`
