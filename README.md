@@ -5,6 +5,14 @@
 RigPulse is a local-first dashboard for mixed ASIC mining fleets. It polls miners
 directly over the LAN and keeps monitoring data local.
 
+## v0.5.7
+
+This corrective release rebuilds local miner cards using the complete approved
+RigPulse instrument layout. Live Hashrate and a more pronounced Best Share now
+sit together, with dedicated thermal gauges and operating readings.
+
+See `RELEASE-NOTES-v0.5.7.md` for details.
+
 ## v0.5.6
 
 This release renames the Nerd Console theme to RigPulse Console and applies the
@@ -80,7 +88,7 @@ The Umbrel Community App Store is published separately from this source reposito
 The production Umbrel package expects a public GHCR image:
 
 ```text
-ghcr.io/loud-roar/rigpulse:0.5.6
+ghcr.io/loud-roar/rigpulse:0.5.7
 ```
 
 Source repository: `https://github.com/Loud-Roar/rigpulse`
