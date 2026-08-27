@@ -110,6 +110,11 @@ class CustomizationIn(BaseModel):
     btc_solo_hashrate_unit: str = "TH"
     bch_solo_hashrate: float = Field(default=0, ge=0)
     bch_solo_hashrate_unit: str = "TH"
+    ntfy_enabled: bool = False
+    ntfy_server: str = "https://ntfy.sh"
+    ntfy_topic: str = ""
+    ntfy_token: str = ""
+    ntfy_best_share_alerts: bool = True
 
 
 class WSManager:
@@ -142,7 +147,7 @@ latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
 latest_prices: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "source": "CoinGecko"}
 latest_solopool: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None, "errors": {}}
-app = FastAPI(title="RigPulse", version="0.5.8")
+app = FastAPI(title="RigPulse", version="0.5.9")
 
 
 def db():
@@ -225,6 +230,11 @@ def init_db():
             "btc_solo_hashrate_unit": "TH",
             "bch_solo_hashrate": "0",
             "bch_solo_hashrate_unit": "TH",
+            "ntfy_enabled": "false",
+            "ntfy_server": "https://ntfy.sh",
+            "ntfy_topic": "",
+            "ntfy_token": "",
+            "ntfy_best_share_alerts": "true",
         }
         for k,v in defaults.items():
             c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k,v))
@@ -262,6 +272,11 @@ def get_customization():
         "btc_solo_hashrate_unit": rows.get("btc_solo_hashrate_unit", "TH").upper(),
         "bch_solo_hashrate": float(rows.get("bch_solo_hashrate", "0") or 0),
         "bch_solo_hashrate_unit": rows.get("bch_solo_hashrate_unit", "TH").upper(),
+        "ntfy_enabled": rows.get("ntfy_enabled", "false") == "true",
+        "ntfy_server": rows.get("ntfy_server", "https://ntfy.sh").strip().rstrip("/"),
+        "ntfy_topic": rows.get("ntfy_topic", "").strip(),
+        "ntfy_token": rows.get("ntfy_token", "").strip(),
+        "ntfy_best_share_alerts": rows.get("ntfy_best_share_alerts", "true") == "true",
     }
 
 
@@ -1432,6 +1447,61 @@ def record_event(miner_id: int | None, event_type: str, value_text: str | None =
     with db() as c:
         c.execute("INSERT INTO events(miner_id,ts,event_type,value_text,value_num,details) VALUES(?,?,?,?,?,?)", (miner_id,int(time.time()),event_type,value_text,value_num,json.dumps(details or {},separators=(",",":"))))
 
+def _share_display(value: float | None) -> str:
+    if value is None: return "--"
+    for scale, suffix in ((1e18,"E"),(1e15,"P"),(1e12,"T"),(1e9,"G"),(1e6,"M"),(1e3,"K")):
+        if abs(value) >= scale: return f"{value/scale:.2f}{suffix}"
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+def _setting_value(key: str) -> str | None:
+    with db() as c:
+        row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return str(row["value"]) if row else None
+
+def _set_setting_value(key: str, value: Any):
+    with db() as c:
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (key, str(value)))
+
+async def send_ntfy(title: str, message: str, *, priority: int = 4, tags: list[str] | None = None, require_enabled: bool = True) -> bool:
+    cfg = get_customization()
+    if require_enabled and not cfg.get("ntfy_enabled"): return False
+    server = str(cfg.get("ntfy_server") or "https://ntfy.sh").strip().rstrip("/")
+    topic = str(cfg.get("ntfy_topic") or "").strip()
+    if not re.match(r"^https?://", server, re.I): raise ValueError("ntfy server must start with http:// or https://")
+    if not re.match(r"^[A-Za-z0-9_-]{1,64}$", topic): raise ValueError("ntfy topic must use 1-64 letters, numbers, hyphens, or underscores")
+    headers = {"content-type": "application/json"}
+    token = str(cfg.get("ntfy_token") or "").strip()
+    if token: headers["authorization"] = f"Bearer {token}"
+    payload = {"topic": topic, "title": title, "message": message, "priority": max(1,min(5,int(priority))), "tags": tags or []}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.0)) as client:
+        response = await client.post(server, json=payload, headers=headers)
+        response.raise_for_status()
+    return True
+
+async def check_solopool_best_share(coin: str, address: str, raw_value: Any):
+    current = _best_share_number(raw_value)
+    if current is None: return
+    key = f"ntfy_pool_best:{coin}:{address}"
+    previous_raw = _setting_value(key)
+    if previous_raw is None:
+        _set_setting_value(key, current)
+        return
+    previous = _safe_float(previous_raw)
+    if previous is None:
+        _set_setting_value(key, current)
+        return
+    if current > previous:
+        details = {"coin":coin.upper(),"address":address,"previous":previous,"current":current,"source":f"{coin}.solopool.org"}
+        record_event(None, "solopool_best_share", value_text=str(raw_value), value_num=current, details=details)
+        await manager.broadcast({"type":"solopool_best_share", **details})
+        if get_customization().get("ntfy_best_share_alerts", True):
+            try:
+                await send_ntfy(f"RigPulse: New {coin.upper()} SoloPool Best Share", f"New pool best: {_share_display(current)}\nPrevious: {_share_display(previous)}", tags=["trophy","pick"])
+            except Exception:
+                pass
+    if current != previous:
+        _set_setting_value(key, current)
+
 def enrich_share_telemetry(t: Telemetry) -> Telemetry:
     raw = t.raw or {}
     current = find_value(raw, [
@@ -1523,8 +1593,17 @@ async def collector():
                 if old and old.accepted is not None and t.accepted is not None and t.accepted > old.accepted:
                     delta = min(t.accepted - old.accepted, 25)
                     await manager.broadcast({"type":"share","miner_id":miner["id"],"miner_name":miner["name"],"algorithm":miner["algorithm"],"count":delta})
-                if old and old.best_share and t.best_share and t.best_share != old.best_share:
+                old_best = _best_share_number(old.best_share) if old else None
+                new_best = _best_share_number(t.best_share)
+                if old_best is not None and new_best is not None and new_best > old_best:
+                    details = {"previous":old_best,"current":new_best,"algorithm":miner["algorithm"]}
+                    record_event(miner["id"], "best_share", value_text=str(t.best_share), value_num=new_best, details=details)
                     await manager.broadcast({"type":"best_share","miner_id":miner["id"],"miner_name":miner["name"],"value":t.best_share})
+                    if get_customization().get("ntfy_best_share_alerts", True):
+                        try:
+                            await send_ntfy(f"RigPulse: New Best Share — {miner['name']}", f"New miner best: {_share_display(new_best)}\nPrevious: {_share_display(old_best)}", tags=["trophy","pick"])
+                        except Exception:
+                            pass
                 await reconcile_block_claim(miner, t)
                 pool_url, _pool_user = _telemetry_pool_identity(t)
                 if pool_url and "solopool.org" not in pool_url.lower():
@@ -2070,6 +2149,19 @@ def customization_put(body: CustomizationIn):
     return save_customization(body)
 
 
+@app.post("/api/notifications/ntfy/test")
+async def ntfy_test():
+    cfg = get_customization()
+    if not cfg.get("ntfy_enabled"):
+        raise HTTPException(400, "Enable ntfy notifications first")
+    try:
+        sent = await send_ntfy("RigPulse test notification", "ntfy is connected. New miner and SoloPool best shares will alert this phone.", priority=3, tags=["white_check_mark","pick"])
+        if not sent: raise ValueError("ntfy notifications are disabled")
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(502, f"ntfy test failed: {e}")
+
+
 @app.get("/api/block-status")
 def block_status():
     return latest_block
@@ -2254,7 +2346,7 @@ async def price_watcher():
                         "include_24hr_change": "true",
                         "include_last_updated_at": "true",
                     },
-                    headers={"accept": "application/json", "user-agent": "RigPulse/0.5.8"},
+                    headers={"accept": "application/json", "user-agent": "RigPulse/0.5.9"},
                 )
                 response.raise_for_status(); data = response.json()
             prices: dict[str, Any] = {"updated_at": int(time.time()), "source": "CoinGecko", "available": True}
@@ -2343,6 +2435,7 @@ async def solopool_watcher():
                                 ],
                                 "source": f"{coin}.solopool.org",
                             }
+                            await check_solopool_best_share(coin, address, data.get("bestShare"))
                             blocks = data.get("blocks") or []
                             if not blocks: continue
                             block = max(blocks, key=lambda b: int(b.get("timestamp") or 0)); worker = str(block.get("worker") or "").strip()
@@ -3022,6 +3115,13 @@ body.theme-nerd-console .grid{grid-template-columns:repeat(auto-fit,minmax(390px
 <div class="row"><div class="field"><label>BTC public wallet address (optional)</label><input id="cBtcWallet" placeholder="bc1…"><div class="sub">Watch-only balance. Never enter a seed phrase or private key.</div></div><div class="field"><label>BCH public wallet address (optional)</label><input id="cBchWallet" placeholder="bitcoincash:q…"><div class="sub">Watch-only balance. Never enter a seed phrase or private key.</div></div></div>
 <div class="row"><div class="field"><label>BTC SoloPool mining address (optional)</label><input id="cBtcSoloPool" placeholder="bc1…"><div class="sub">Loads public BTC SoloPool miner status.</div></div><div class="field"><label>BCH SoloPool mining address (optional)</label><input id="cBchSoloPool" placeholder="q…"><div class="sub">Loads public status and enables pool-side block detection.</div></div></div>
 <div class="row"><div class="field"><label>BTC solo-mining hashrate</label><div style="display:grid;grid-template-columns:1fr 90px;gap:7px"><input id="cBtcSoloHash" type="number" min="0" step="any" placeholder="476"><select id="cBtcSoloUnit"><option value="TH">TH/s</option><option value="PH">PH/s</option></select></div><div class="sub">Used only for probability calculations.</div></div><div class="field"><label>BCH solo-mining hashrate</label><div style="display:grid;grid-template-columns:1fr 90px;gap:7px"><input id="cBchSoloHash" type="number" min="0" step="any" placeholder="476"><select id="cBchSoloUnit"><option value="TH">TH/s</option><option value="PH">PH/s</option></select></div><div class="sub">Enter the hashrate actually pointed at BCH.</div></div></div>
+<h3 style="margin:18px 0 4px">Phone notifications (ntfy)</h3>
+<div class="sub">Install the ntfy app on your phone and subscribe to the same private topic entered here.</div>
+<label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input id="cNtfyEnabled" type="checkbox"> Enable ntfy notifications</label>
+<label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input id="cNtfyBest" type="checkbox" checked> Alert for new miner and SoloPool Best Shares</label>
+<div class="row"><div class="field"><label>ntfy server</label><input id="cNtfyServer" value="https://ntfy.sh" placeholder="https://ntfy.sh"></div><div class="field"><label>Private topic</label><input id="cNtfyTopic" placeholder="rigpulse-long-random-name"><div class="sub">Use a long, hard-to-guess topic name.</div></div></div>
+<div class="field"><label>Access token (optional)</label><input id="cNtfyToken" type="password" autocomplete="off" placeholder="tk_…"><div class="sub">Only needed for a protected topic or self-hosted ntfy server.</div></div>
+<div class="actions" style="justify-content:flex-start"><button class="btn" type="button" onclick="testNtfy()">Save &amp; Send Test Notification</button></div>
 <div class="actions"><button class="btn" onclick="resetDashboardLayout()">Reset Box Layout</button><button class="btn" onclick="resetCustomization()">Reset Theme</button><button class="btn primary" onclick="saveCustomization()">Save Customization</button></div>
 </div></div>
 
@@ -3077,7 +3177,7 @@ body.theme-nerd-console .grid{grid-template-columns:repeat(auto-fit,minmax(390px
 </div>
 </div></div>
 <script>
-let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:"",btc_solopool_address:"",bch_solopool_address:"",btc_solo_hashrate:0,btc_solo_hashrate_unit:"TH",bch_solo_hashrate:0,bch_solo_hashrate_unit:"TH"}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
+let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:"",btc_solopool_address:"",bch_solopool_address:"",btc_solo_hashrate:0,btc_solo_hashrate_unit:"TH",bch_solo_hashrate:0,bch_solo_hashrate_unit:"TH",ntfy_enabled:false,ntfy_server:"https://ntfy.sh",ntfy_topic:"",ntfy_token:"",ntfy_best_share_alerts:true}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
 const LAYOUT_KEY='rigpulse-dashboard-layout-v1',SIDEBAR_KEY='rigpulse-sidebar-hidden';let layoutEditing=false,draggedLayoutBox=null,defaultLayout={};
 function toggleSidebar(force){const hidden=force??!document.body.classList.contains('sidebar-hidden');document.body.classList.toggle('sidebar-hidden',hidden);localStorage.setItem(SIDEBAR_KEY,hidden?'1':'0');$('menuToggleBtn').textContent=hidden?'☰ Show Menu':'☰ Hide Menu'}
 function layoutContainers(){return ['summaryMetrics','chainStrips','dashboardPanels'].map($).filter(Boolean)}
@@ -3218,8 +3318,8 @@ async function loadMiniSpark(id){try{let rows=await fetch(`/api/miners/${id}/his
 async function openDetail(id){selectedMinerId=id;$('detailModal').classList.add('show');let m=await fetch(`/api/miners/${id}/detail`).then(r=>r.json()),t=m.telemetry||{};$('detailTitle').textContent=m.name;$('detailStats').innerHTML=`<div class="detail-stat"><small>Realtime Hashrate</small><b>${hashText(t,m.algorithm)}</b></div><div class="detail-stat"><small>Average Hashrate</small><b>${t.avg_hashrate!=null?fmt(t.avg_hashrate)+' '+(t.avg_hashrate_unit||''):'--'}</b></div><div class="detail-stat"><small>Temperature</small><b>${t.temp_c!=null?fmt(t.temp_c,0)+'°C':'--'}</b></div><div class="detail-stat"><small>Power</small><b>${t.power_w!=null?fmt(t.power_w,0)+' W':'--'}</b></div><div class="detail-stat"><small>Shares Today</small><b>${m.shares_today??'--'}</b></div><div class="detail-stat"><small>Session Shares</small><b>${m.shares_session??'--'}</b></div><div class="detail-stat"><small>Lifetime Shares</small><b>${m.shares_lifetime??'--'}</b></div><div class="detail-stat"><small>Reject %</small><b>${m.reject_pct!=null?fmt(m.reject_pct,4)+'%':'--'}</b></div><div class="detail-stat"><small>Best Share</small><b>${fmtShare(t.best_share)}</b></div><div class="detail-stat"><small>Uptime</small><b>${t.uptime_s?uptime(t.uptime_s):'--'}</b></div><div class="detail-stat"><small>Pool</small><b>${t.pool_alive===true?'Alive':t.pool_alive===false?'Down':'--'}</b></div><div class="detail-stat"><small>IP</small><b style="font-size:14px">${esc(m.ip)}</b></div>`;await loadDetailHistory(3600);await loadDetailEvents(id);await loadHardware(id)}
 function closeDetail(){$('detailModal').classList.remove('show');selectedMinerId=null}
 async function loadDetailHistory(seconds){if(!selectedMinerId)return;let rows=await fetch(`/api/miners/${selectedMinerId}/history?seconds=${seconds}`).then(r=>r.json());requestAnimationFrame(()=>{drawLineChart('hashChart',rows,'hashrate');drawLineChart('tempChart',rows,'temp_c');drawLineChart('powerChart',rows,'power_w')})}
-function eventLabel(e){return({accepted_share:'Accepted share',rejected_share:'Rejected share',best_share:'New best share',block_found:'BLOCK FOUND',miner_offline:'Miner offline',miner_recovered:'Miner recovered',miner_seen_online:'Miner online',temperature_warning:'Temperature warning',hashrate_drop:'Hashrate drop',new_block:'New Bitcoin block'})[e.event_type]||e.event_type}
-function eventIcon(e){return({accepted_share:'🎉',rejected_share:'❌',best_share:'🏆',block_found:'🎊',miner_offline:'🔴',miner_recovered:'🟢',miner_seen_online:'🟢',temperature_warning:'🌡️',hashrate_drop:'⚠️',new_block:'₿'})[e.event_type]||'•'}
+function eventLabel(e){return({accepted_share:'Accepted share',rejected_share:'Rejected share',best_share:'New best share',solopool_best_share:'New SoloPool best share',block_found:'BLOCK FOUND',miner_offline:'Miner offline',miner_recovered:'Miner recovered',miner_seen_online:'Miner online',temperature_warning:'Temperature warning',hashrate_drop:'Hashrate drop',new_block:'New Bitcoin block'})[e.event_type]||e.event_type}
+function eventIcon(e){return({accepted_share:'🎉',rejected_share:'❌',best_share:'🏆',solopool_best_share:'🏆',block_found:'🎊',miner_offline:'🔴',miner_recovered:'🟢',miner_seen_online:'🟢',temperature_warning:'🌡️',hashrate_drop:'⚠️',new_block:'₿'})[e.event_type]||'•'}
 function eventValue(e){if(e.event_type==='accepted_share'&&e.value_num!=null)return `+${e.value_num}`;if(e.event_type==='rejected_share'&&e.value_num!=null)return `+${e.value_num}`;if(e.event_type==='new_block')return `#${e.value_text||''}`;return e.value_text??e.value_num??''}
 function eventTable(rows){if(!rows.length)return'<div class="health-item">No event rows are stored yet. Leave RigPulse running while miners submit shares and events will appear here.</div>';return `<table class="event-table"><thead><tr><th></th><th>Time</th><th>Miner</th><th>Event</th><th>Value</th></tr></thead><tbody>${rows.map(e=>`<tr><td>${eventIcon(e)}</td><td>${new Date(e.ts*1000).toLocaleString()}</td><td>${esc(e.miner_name||'Network')}</td><td>${esc(eventLabel(e))}</td><td>${esc(eventValue(e))}</td></tr>`).join('')}</tbody></table>`}
 async function loadDetailEvents(id){try{let rows=await fetch(`/api/events?miner_id=${id}&limit=50`).then(r=>r.json());$('detailEvents').innerHTML=eventTable(rows)}catch(e){$('detailEvents').innerHTML='<div class="sub">Could not load events.</div>'}}
@@ -3301,7 +3401,7 @@ function previewCustomization(){
  const c={
   theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),
   background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,
-  block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value
+  block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked
  };
  $('cOpacityVal').textContent=Math.round(c.card_opacity*100)+'%';
  $('cBlurVal').textContent=c.blur_px+'px'; $('cIntensityVal').textContent=c.background_intensity.toFixed(1)+'x';
@@ -3313,7 +3413,7 @@ function chooseBackground(theme){$('cTheme').value=theme;previewCustomization()}
 async function openCustomization(){
  customization=await fetch('/api/customization').then(r=>r.json());
  $('cTheme').value=customization.theme;$('cOpacity').value=customization.card_opacity;$('cBlur').value=customization.blur_px;
- $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';$('cBtcSoloPool').value=customization.btc_solopool_address||'';$('cBchSoloPool').value=customization.bch_solopool_address||'';$('cBtcSoloHash').value=customization.btc_solo_hashrate||'';$('cBtcSoloUnit').value=customization.btc_solo_hashrate_unit||'TH';$('cBchSoloHash').value=customization.bch_solo_hashrate||'';$('cBchSoloUnit').value=customization.bch_solo_hashrate_unit||'TH';
+ $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';$('cBtcSoloPool').value=customization.btc_solopool_address||'';$('cBchSoloPool').value=customization.bch_solopool_address||'';$('cBtcSoloHash').value=customization.btc_solo_hashrate||'';$('cBtcSoloUnit').value=customization.btc_solo_hashrate_unit||'TH';$('cBchSoloHash').value=customization.bch_solo_hashrate||'';$('cBchSoloUnit').value=customization.bch_solo_hashrate_unit||'TH';$('cNtfyEnabled').checked=!!customization.ntfy_enabled;$('cNtfyServer').value=customization.ntfy_server||'https://ntfy.sh';$('cNtfyTopic').value=customization.ntfy_topic||'';$('cNtfyToken').value=customization.ntfy_token||'';$('cNtfyBest').checked=customization.ntfy_best_share_alerts!==false;
  previewCustomization();$('customModal').classList.add('show');
 }
 function closeCustomization(){$('customModal').classList.remove('show');applyCustomization(customization)}
@@ -3321,10 +3421,15 @@ function resetCustomization(){
  $('cTheme').value='midnight';$('cOpacity').value=.82;$('cBlur').value=14;$('cIntensity').value=1;$('cCompact').checked=false;$('cBlockApi').value='https://mempool.space/api';$('cBtcWallet').value='';$('cBchWallet').value='';$('cBtcSoloPool').value='';$('cBchSoloPool').value='';$('cBtcSoloHash').value='';$('cBchSoloHash').value='';$('cBtcSoloUnit').value='TH';$('cBchSoloUnit').value='TH';previewCustomization();
 }
 async function saveCustomization(){
- const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value};
+ const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked};
  const r=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
  if(!r.ok){toast('Could not save customization');return}
  customization=await r.json();applyCustomization(customization);$('customModal').classList.remove('show');$('btcBalance').textContent=customization.btc_wallet_address?'Updating…':'Not configured';$('bchBalance').textContent=customization.bch_wallet_address?'Updating…':'Not configured';toast('Customization saved');try{await fetch('/api/wallets/refresh',{method:'POST'});await loadChainExtras()}catch(e){toast('Saved — wallet service is temporarily unavailable')}setTimeout(loadBlockStatus,500);
+}
+async function testNtfy(){
+ const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked};
+ const saved=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!saved.ok){toast('Could not save ntfy settings');return}customization=await saved.json();
+ const r=await fetch('/api/notifications/ntfy/test',{method:'POST'});if(r.ok){toast('ntfy test sent — check your phone');return}let message='ntfy test failed';try{const e=await r.json();message=e.detail||message}catch(e){}toast(message)
 }
 ['cTheme','cOpacity','cBlur','cIntensity','cCompact'].forEach(id=>document.addEventListener('input',e=>{if(e.target&&e.target.id===id)previewCustomization()}));
 
@@ -3430,7 +3535,7 @@ new MutationObserver(()=>requestAnimationFrame(stabilizeMinerCards)).observe($('
 function connectWS(){
  let proto=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(`${proto}://${location.host}/ws`);
  ws.onopen=()=>{$('wsState').textContent='LIVE';$('wsState').style.color='#31da7a';ws.send('hello')};
- ws.onmessage=e=>{let x=JSON.parse(e.data);if(x.type==='share')celebrate(x.miner_name,x.count);if(x.type==='best_share')celebrate(x.miner_name,1,'best_share');if(x.type==='block_found')blockFoundCelebrate(x);if(x.type==='rejected_share')toast(`❌ ${x.miner_name}: ${x.count} rejected`);if(x.type==='miner_offline')toast(`🔴 ${x.miner_name} went offline`);if(x.type==='miner_recovered')toast(`🟢 ${x.miner_name} recovered`);if(x.type==='temperature_warning')toast(`🌡️ ${x.miner_name}: ${x.value}°C`);if(x.type==='hashrate_drop')toast(`⚠️ ${x.miner_name}: hashrate drop`);if(x.type==='new_block')newBlockCelebrate(x)};
+ ws.onmessage=e=>{let x=JSON.parse(e.data);if(x.type==='share')celebrate(x.miner_name,x.count);if(x.type==='best_share')celebrate(x.miner_name,1,'best_share');if(x.type==='solopool_best_share')toast(`🏆 New ${x.coin} SoloPool best share: ${fmtShare(x.current)}`);if(x.type==='block_found')blockFoundCelebrate(x);if(x.type==='rejected_share')toast(`❌ ${x.miner_name}: ${x.count} rejected`);if(x.type==='miner_offline')toast(`🔴 ${x.miner_name} went offline`);if(x.type==='miner_recovered')toast(`🟢 ${x.miner_name} recovered`);if(x.type==='temperature_warning')toast(`🌡️ ${x.miner_name}: ${x.value}°C`);if(x.type==='hashrate_drop')toast(`⚠️ ${x.miner_name}: hashrate drop`);if(x.type==='new_block')newBlockCelebrate(x)};
  ws.onclose=()=>{$('wsState').textContent='reconnecting…';setTimeout(connectWS,2000)}
 }
 setupDashboardLayout();toggleSidebar(localStorage.getItem(SIDEBAR_KEY)==='1');load().then(()=>{loadLastBlockEvent();loadChainExtras()});connectWS();refreshFleetBestRing();setInterval(load,10000);setInterval(refreshFleetBestRing,10000);setInterval(loadBlockStatus,20000);setInterval(loadChainExtras,30000);

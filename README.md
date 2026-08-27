@@ -5,6 +5,13 @@
 RigPulse is a local-first dashboard for mixed ASIC mining fleets. It polls miners
 directly over the LAN and keeps monitoring data local.
 
+## v0.5.9
+
+This release adds optional ntfy phone notifications for new miner and SoloPool
+best shares, including saved settings and a test-notification button.
+
+See `RELEASE-NOTES-v0.5.9.md` for details.
+
 ## v0.5.8
 
 This emergency compatibility release rolls back the v0.5.7 miner-card
@@ -95,7 +102,7 @@ The Umbrel Community App Store is published separately from this source reposito
 The production Umbrel package expects a public GHCR image:
 
 ```text
-ghcr.io/loud-roar/rigpulse:0.5.8
+ghcr.io/loud-roar/rigpulse:0.5.9
 ```
 
 Source repository: `https://github.com/Loud-Roar/rigpulse`
