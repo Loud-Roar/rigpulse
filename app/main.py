@@ -113,6 +113,8 @@ class CustomizationIn(BaseModel):
     ntfy_enabled: bool = False
     ntfy_server: str = "https://ntfy.sh"
     ntfy_topic: str = ""
+    ntfy_block_topic: str = ""
+    ntfy_warning_topic: str = ""
     ntfy_token: str = ""
     ntfy_best_share_alerts: bool = True
     ntfy_block_alerts: bool = True
@@ -149,7 +151,7 @@ latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None}
 latest_prices: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "source": "CoinGecko"}
 latest_solopool: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None, "errors": {}}
-app = FastAPI(title="RigPulse", version="0.5.10")
+app = FastAPI(title="RigPulse", version="0.5.11")
 
 
 def db():
@@ -235,6 +237,8 @@ def init_db():
             "ntfy_enabled": "false",
             "ntfy_server": "https://ntfy.sh",
             "ntfy_topic": "",
+            "ntfy_block_topic": "",
+            "ntfy_warning_topic": "",
             "ntfy_token": "",
             "ntfy_best_share_alerts": "true",
             "ntfy_block_alerts": "true",
@@ -279,6 +283,8 @@ def get_customization():
         "ntfy_enabled": rows.get("ntfy_enabled", "false") == "true",
         "ntfy_server": rows.get("ntfy_server", "https://ntfy.sh").strip().rstrip("/"),
         "ntfy_topic": rows.get("ntfy_topic", "").strip(),
+        "ntfy_block_topic": rows.get("ntfy_block_topic", "").strip(),
+        "ntfy_warning_topic": rows.get("ntfy_warning_topic", "").strip(),
         "ntfy_token": rows.get("ntfy_token", "").strip(),
         "ntfy_best_share_alerts": rows.get("ntfy_best_share_alerts", "true") == "true",
         "ntfy_block_alerts": rows.get("ntfy_block_alerts", "true") == "true",
@@ -1473,7 +1479,7 @@ async def send_ntfy(title: str, message: str, *, priority: int = 4, tags: list[s
     if require_enabled and not cfg.get("ntfy_enabled"): return False
     server = str(cfg.get("ntfy_server") or "https://ntfy.sh").strip().rstrip("/")
     base_topic = str(cfg.get("ntfy_topic") or "").strip()
-    topic = base_topic if channel == "best" else f"{base_topic}-{channel}"
+    topic = base_topic if channel == "best" else str(cfg.get(f"ntfy_{channel}_topic") or f"{base_topic}-{channel}").strip()
     if not re.match(r"^https?://", server, re.I): raise ValueError("ntfy server must start with http:// or https://")
     if not re.match(r"^[A-Za-z0-9_-]{1,64}$", topic): raise ValueError("ntfy topic must use 1-64 letters, numbers, hyphens, or underscores")
     headers = {"content-type": "application/json"}
@@ -2377,7 +2383,7 @@ async def price_watcher():
                         "include_24hr_change": "true",
                         "include_last_updated_at": "true",
                     },
-                    headers={"accept": "application/json", "user-agent": "RigPulse/0.5.10"},
+                    headers={"accept": "application/json", "user-agent": "RigPulse/0.5.11"},
                 )
                 response.raise_for_status(); data = response.json()
             prices: dict[str, Any] = {"updated_at": int(time.time()), "source": "CoinGecko", "available": True}
@@ -2939,7 +2945,7 @@ body.sidebar-hidden .app{grid-template-columns:1fr}body.sidebar-hidden .sidebar{
 .solo-odds{margin-top:9px;color:#9bb0c8;font-size:13px;line-height:1.4}.solo-odds b{color:#70d8ff;font-size:14px}.solopool-strip{margin-top:10px;padding:12px 14px;display:grid;grid-template-columns:auto repeat(2,minmax(0,1fr));gap:12px;align-items:stretch}.solopool-item{min-width:0;color:#8fa4bb;font-size:11px;background:rgba(5,16,29,.62);border:1px solid rgba(var(--accent-rgb),.18);border-radius:11px;padding:11px 13px}.solopool-item>b{color:#a9bdd2;font-size:11px}.solopool-title{font-weight:800;display:flex;align-items:center}.solopool-hash{font-size:clamp(20px,2vw,27px);font-weight:900;color:#5fc8ff;margin:5px 0 3px;line-height:1}.solopool-item.bch .solopool-hash{color:#d576ff}.solopool-stats{display:flex;gap:7px 12px;flex-wrap:wrap;margin-top:6px}.solopool-stats span{white-space:nowrap}.solopool-stats b{color:#fff}.solopool-highlights{display:flex;gap:8px;margin-top:9px}.solopool-highlight{flex:1;min-width:0;padding:8px 10px;border-radius:9px;background:rgba(17,29,45,.8);border:1px solid rgba(var(--accent-rgb),.24)}.solopool-highlight span{display:block;color:#8fa4bb;font-size:10px;text-transform:uppercase;letter-spacing:.05em}.solopool-highlight b{display:block;margin-top:3px;color:#37e488;font-size:clamp(18px,1.7vw,24px);font-weight:900;line-height:1}.solopool-item.bch .solopool-highlight b{color:#d576ff}.pool-miner-card .hash{color:#5fc8ff}.pool-miner-card.bch .hash{color:#d576ff}
 .block-pulse{animation:blockPulse 1.8s ease}
 @keyframes blockPulse{0%{box-shadow:0 0 0 0 rgba(247,147,26,.65)}100%{box-shadow:0 0 0 30px rgba(247,147,26,0)}}
-.miner.block-winner{border-color:#ffd84d;box-shadow:0 0 18px rgba(255,190,30,.38)}.block-found-badge{position:absolute;z-index:6;left:12px;top:8px;background:#5b2500;border:1px solid #ffcf40;color:#fff1a8;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:900;box-shadow:0 2px 8px #0009}.card-confetti{position:absolute;z-index:5;pointer-events:none;font-size:14px;animation:cardConfetti 1.8s linear forwards}@keyframes cardConfetti{from{transform:translateY(-20px) rotate(0);opacity:1}to{transform:translateY(210px) rotate(500deg);opacity:0}}
+.miner.block-winner{border-color:#ffd84d;box-shadow:0 0 18px rgba(255,190,30,.38);padding-top:42px}.block-found-badge{position:absolute;z-index:6;left:12px;top:8px;background:#5b2500;border:1px solid #ffcf40;color:#fff1a8;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:900;box-shadow:0 2px 8px #0009}.card-confetti{position:absolute;z-index:5;pointer-events:none;font-size:14px;animation:cardConfetti 1.8s linear forwards}@keyframes cardConfetti{from{transform:translateY(-20px) rotate(0);opacity:1}to{transform:translateY(210px) rotate(500deg);opacity:0}}
 .block-party{z-index:100;background:rgba(0,0,0,.88)}.block-party-panel{text-align:center;max-width:620px;background:radial-gradient(circle at 50% 0,rgba(255,190,30,.28),rgba(7,17,29,.99) 58%)}.block-party-title{font-size:clamp(38px,8vw,78px);font-weight:1000;color:#ffd84d;text-shadow:0 0 22px rgba(255,190,30,.6);line-height:1}.block-party-miner{font-size:25px;font-weight:800;margin-top:14px}
 .custom-preview{min-height:142px;border-radius:13px;border:1px solid rgba(var(--accent-rgb),.28);background:linear-gradient(135deg,rgba(var(--accent-rgb),.18),rgba(5,12,22,.45));padding:16px;display:flex;align-items:center;overflow:hidden}
 .custom-preview-card{width:min(430px,72%);min-height:86px;border-radius:12px;background:rgba(8,20,34,var(--card-opacity));border:1px solid rgba(var(--accent-rgb),.3);backdrop-filter:blur(var(--glass-blur));padding:12px;display:flex;flex-direction:column;justify-content:center}.custom-preview-card .hash{font-size:22px;margin:7px 0 0;line-height:1.15}
@@ -3157,8 +3163,9 @@ body.theme-nerd-console .grid{grid-template-columns:repeat(auto-fit,minmax(390px
 <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input id="cNtfyBest" type="checkbox" checked> Alert for new miner and SoloPool Best Shares</label>
 <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input id="cNtfyBlock" type="checkbox" checked> Alert when a block is found</label>
 <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input id="cNtfyWarning" type="checkbox" checked> Alert for miner, pool, and temperature warnings</label>
-<div class="row"><div class="field"><label>ntfy server</label><input id="cNtfyServer" value="https://ntfy.sh" placeholder="https://ntfy.sh"></div><div class="field"><label>Private topic</label><input id="cNtfyTopic" placeholder="rigpulse-long-random-name"><div class="sub">Use a long, hard-to-guess topic name.</div></div></div>
-<div class="sub">Sound channels: Best Share uses your topic; Block Found uses <b>your-topic-block</b>; warnings use <b>your-topic-warning</b>. Subscribe to each desired topic in ntfy and assign its sound on your phone.</div>
+<div class="field"><label>ntfy server</label><input id="cNtfyServer" value="https://ntfy.sh" placeholder="https://ntfy.sh"></div>
+<div class="row"><div class="field"><label>Best Share topic</label><input id="cNtfyTopic" placeholder="rigpulse-best-share"><div class="sub">Your existing topic stays here.</div></div><div class="field"><label>Block Found topic</label><input id="cNtfyBlockTopic" placeholder="rigpulse-block-found"></div></div>
+<div class="field"><label>Warning topic</label><input id="cNtfyWarningTopic" placeholder="rigpulse-warnings"><div class="sub">Subscribe to each topic in ntfy and assign its sound on your phone.</div></div>
 <div class="field"><label>Access token (optional)</label><input id="cNtfyToken" type="password" autocomplete="off" placeholder="tk_…"><div class="sub">Only needed for a protected topic or self-hosted ntfy server.</div></div>
 <div class="actions" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" onclick="testNtfy('best')">Test Best Share</button><button class="btn" type="button" onclick="testNtfy('block')">Test Block Found</button><button class="btn" type="button" onclick="testNtfy('warning')">Test Warning</button></div>
 <div class="actions"><button class="btn" onclick="resetDashboardLayout()">Reset Box Layout</button><button class="btn" onclick="resetCustomization()">Reset Theme</button><button class="btn primary" onclick="saveCustomization()">Save Customization</button></div>
@@ -3216,7 +3223,7 @@ body.theme-nerd-console .grid{grid-template-columns:repeat(auto-fit,minmax(390px
 </div>
 </div></div>
 <script>
-let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:"",btc_solopool_address:"",bch_solopool_address:"",btc_solo_hashrate:0,btc_solo_hashrate_unit:"TH",bch_solo_hashrate:0,bch_solo_hashrate_unit:"TH",ntfy_enabled:false,ntfy_server:"https://ntfy.sh",ntfy_topic:"",ntfy_token:"",ntfy_best_share_alerts:true,ntfy_block_alerts:true,ntfy_warning_alerts:true}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
+let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:"",btc_solopool_address:"",bch_solopool_address:"",btc_solo_hashrate:0,btc_solo_hashrate_unit:"TH",bch_solo_hashrate:0,bch_solo_hashrate_unit:"TH",ntfy_enabled:false,ntfy_server:"https://ntfy.sh",ntfy_topic:"",ntfy_block_topic:"",ntfy_warning_topic:"",ntfy_token:"",ntfy_best_share_alerts:true,ntfy_block_alerts:true,ntfy_warning_alerts:true}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
 const LAYOUT_KEY='rigpulse-dashboard-layout-v1',SIDEBAR_KEY='rigpulse-sidebar-hidden';let layoutEditing=false,draggedLayoutBox=null,defaultLayout={};
 function toggleSidebar(force){const hidden=force??!document.body.classList.contains('sidebar-hidden');document.body.classList.toggle('sidebar-hidden',hidden);localStorage.setItem(SIDEBAR_KEY,hidden?'1':'0');$('menuToggleBtn').textContent=hidden?'☰ Show Menu':'☰ Hide Menu'}
 function layoutContainers(){return ['summaryMetrics','chainStrips','dashboardPanels'].map($).filter(Boolean)}
@@ -3440,7 +3447,7 @@ function previewCustomization(){
  const c={
   theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),
   background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,
-  block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked,ntfy_block_alerts:$('cNtfyBlock').checked,ntfy_warning_alerts:$('cNtfyWarning').checked
+  block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_block_topic:$('cNtfyBlockTopic').value.trim(),ntfy_warning_topic:$('cNtfyWarningTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked,ntfy_block_alerts:$('cNtfyBlock').checked,ntfy_warning_alerts:$('cNtfyWarning').checked
  };
  $('cOpacityVal').textContent=Math.round(c.card_opacity*100)+'%';
  $('cBlurVal').textContent=c.blur_px+'px'; $('cIntensityVal').textContent=c.background_intensity.toFixed(1)+'x';
@@ -3452,7 +3459,7 @@ function chooseBackground(theme){$('cTheme').value=theme;previewCustomization()}
 async function openCustomization(){
  customization=await fetch('/api/customization').then(r=>r.json());
  $('cTheme').value=customization.theme;$('cOpacity').value=customization.card_opacity;$('cBlur').value=customization.blur_px;
- $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';$('cBtcSoloPool').value=customization.btc_solopool_address||'';$('cBchSoloPool').value=customization.bch_solopool_address||'';$('cBtcSoloHash').value=customization.btc_solo_hashrate||'';$('cBtcSoloUnit').value=customization.btc_solo_hashrate_unit||'TH';$('cBchSoloHash').value=customization.bch_solo_hashrate||'';$('cBchSoloUnit').value=customization.bch_solo_hashrate_unit||'TH';$('cNtfyEnabled').checked=!!customization.ntfy_enabled;$('cNtfyServer').value=customization.ntfy_server||'https://ntfy.sh';$('cNtfyTopic').value=customization.ntfy_topic||'';$('cNtfyToken').value=customization.ntfy_token||'';$('cNtfyBest').checked=customization.ntfy_best_share_alerts!==false;$('cNtfyBlock').checked=customization.ntfy_block_alerts!==false;$('cNtfyWarning').checked=customization.ntfy_warning_alerts!==false;
+ $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';$('cBtcSoloPool').value=customization.btc_solopool_address||'';$('cBchSoloPool').value=customization.bch_solopool_address||'';$('cBtcSoloHash').value=customization.btc_solo_hashrate||'';$('cBtcSoloUnit').value=customization.btc_solo_hashrate_unit||'TH';$('cBchSoloHash').value=customization.bch_solo_hashrate||'';$('cBchSoloUnit').value=customization.bch_solo_hashrate_unit||'TH';$('cNtfyEnabled').checked=!!customization.ntfy_enabled;$('cNtfyServer').value=customization.ntfy_server||'https://ntfy.sh';$('cNtfyTopic').value=customization.ntfy_topic||'';$('cNtfyBlockTopic').value=customization.ntfy_block_topic||(customization.ntfy_topic?customization.ntfy_topic+'-block':'');$('cNtfyWarningTopic').value=customization.ntfy_warning_topic||(customization.ntfy_topic?customization.ntfy_topic+'-warning':'');$('cNtfyToken').value=customization.ntfy_token||'';$('cNtfyBest').checked=customization.ntfy_best_share_alerts!==false;$('cNtfyBlock').checked=customization.ntfy_block_alerts!==false;$('cNtfyWarning').checked=customization.ntfy_warning_alerts!==false;
  previewCustomization();$('customModal').classList.add('show');
 }
 function closeCustomization(){$('customModal').classList.remove('show');applyCustomization(customization)}
@@ -3460,13 +3467,13 @@ function resetCustomization(){
  $('cTheme').value='midnight';$('cOpacity').value=.82;$('cBlur').value=14;$('cIntensity').value=1;$('cCompact').checked=false;$('cBlockApi').value='https://mempool.space/api';$('cBtcWallet').value='';$('cBchWallet').value='';$('cBtcSoloPool').value='';$('cBchSoloPool').value='';$('cBtcSoloHash').value='';$('cBchSoloHash').value='';$('cBtcSoloUnit').value='TH';$('cBchSoloUnit').value='TH';previewCustomization();
 }
 async function saveCustomization(){
- const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked,ntfy_block_alerts:$('cNtfyBlock').checked,ntfy_warning_alerts:$('cNtfyWarning').checked};
+ const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_block_topic:$('cNtfyBlockTopic').value.trim(),ntfy_warning_topic:$('cNtfyWarningTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked,ntfy_block_alerts:$('cNtfyBlock').checked,ntfy_warning_alerts:$('cNtfyWarning').checked};
  const r=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
  if(!r.ok){toast('Could not save customization');return}
  customization=await r.json();applyCustomization(customization);$('customModal').classList.remove('show');$('btcBalance').textContent=customization.btc_wallet_address?'Updating…':'Not configured';$('bchBalance').textContent=customization.bch_wallet_address?'Updating…':'Not configured';toast('Customization saved');try{await fetch('/api/wallets/refresh',{method:'POST'});await loadChainExtras()}catch(e){toast('Saved — wallet service is temporarily unavailable')}setTimeout(loadBlockStatus,500);
 }
 async function testNtfy(channel='best'){
- const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked,ntfy_block_alerts:$('cNtfyBlock').checked,ntfy_warning_alerts:$('cNtfyWarning').checked};
+ const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_block_topic:$('cNtfyBlockTopic').value.trim(),ntfy_warning_topic:$('cNtfyWarningTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked,ntfy_block_alerts:$('cNtfyBlock').checked,ntfy_warning_alerts:$('cNtfyWarning').checked};
  const saved=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!saved.ok){toast('Could not save ntfy settings');return}customization=await saved.json();
  const r=await fetch(`/api/notifications/ntfy/test/${channel}`,{method:'POST'});if(r.ok){toast(`ntfy ${channel} test sent — check your phone`);return}let message='ntfy test failed';try{const e=await r.json();message=e.detail||message}catch(e){}toast(message)
 }

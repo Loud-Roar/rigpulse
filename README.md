@@ -5,6 +5,13 @@
 RigPulse is a local-first dashboard for mixed ASIC mining fleets. It polls miners
 directly over the LAN and keeps monitoring data local.
 
+## v0.5.11
+
+This corrective release adds visible, editable topic fields for every ntfy sound
+channel and prevents the Block Found badge from covering the miner name.
+
+See `RELEASE-NOTES-v0.5.11.md` for details.
+
 ## v0.5.10
 
 This release adds separate ntfy sound channels for Best Share, Block Found, and
@@ -109,7 +116,7 @@ The Umbrel Community App Store is published separately from this source reposito
 The production Umbrel package expects a public GHCR image:
 
 ```text
-ghcr.io/loud-roar/rigpulse:0.5.10
+ghcr.io/loud-roar/rigpulse:0.5.11
 ```
 
 Source repository: `https://github.com/Loud-Roar/rigpulse`
