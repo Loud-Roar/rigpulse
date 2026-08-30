@@ -149,10 +149,10 @@ latest_telemetry: dict[int, Telemetry] = {}
 latest_block: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_network: dict[str, Any] = {"available": False, "source": "mempool.space"}
 latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
-latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None}
+latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "errors": {}}
 latest_prices: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "source": "CoinGecko"}
 latest_solopool: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None, "errors": {}}
-app = FastAPI(title="RigPulse", version="0.6.0")
+app = FastAPI(title="RigPulse", version="0.6.1")
 
 
 def db():
@@ -212,6 +212,10 @@ def init_db():
             miner_id INTEGER PRIMARY KEY, pool_address TEXT NOT NULL, block_hash TEXT NOT NULL,
             block_height INTEGER, found_at INTEGER, active INTEGER NOT NULL DEFAULT 1,
             FOREIGN KEY(miner_id) REFERENCES miners(id)
+        );
+        CREATE TABLE IF NOT EXISTS wallet_cache (
+            symbol TEXT PRIMARY KEY, address TEXT NOT NULL, balance REAL NOT NULL,
+            unit TEXT NOT NULL, updated_at INTEGER NOT NULL
         );
         """)
         defaults = {
@@ -1654,12 +1658,14 @@ async def collector():
 @app.on_event("startup")
 async def startup():
     init_db()
+    load_cached_wallet_balances()
     asyncio.create_task(collector())
     asyncio.create_task(block_watcher())
     asyncio.create_task(network_watcher())
     asyncio.create_task(bch_watcher())
     asyncio.create_task(price_watcher())
     asyncio.create_task(solopool_watcher())
+    asyncio.create_task(wallet_watcher())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2247,9 +2253,41 @@ def _solo_chance(value: float, unit: str, difficulty: Any) -> dict[str, Any] | N
         "chance_30d_pct": chance(30 * 86400), "chance_365d_pct": chance(365 * 86400),
     }
 
+def load_cached_wallet_balances():
+    global latest_wallets
+    cfg = get_customization()
+    wallets: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "errors": {}}
+    with db() as c:
+        rows = c.execute("SELECT symbol,address,balance,unit,updated_at FROM wallet_cache").fetchall()
+    for row in rows:
+        symbol = row["symbol"]
+        configured = cfg.get(f"{symbol}_wallet_address", "")
+        if symbol in ("btc", "bch", "alph") and configured and configured == row["address"]:
+            wallets[symbol] = {"address": row["address"], "balance": row["balance"], "unit": row["unit"], "updated_at": row["updated_at"], "stale": False}
+    stamps = [entry["updated_at"] for entry in (wallets.get("btc"), wallets.get("bch"), wallets.get("alph")) if entry]
+    wallets["updated_at"] = max(stamps) if stamps else None
+    latest_wallets = wallets
+    return wallets
+
+
+def save_wallet_cache(symbol: str, entry: dict[str, Any]):
+    with db() as c:
+        c.execute(
+            "INSERT INTO wallet_cache(symbol,address,balance,unit,updated_at) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(symbol) DO UPDATE SET address=excluded.address,balance=excluded.balance,unit=excluded.unit,updated_at=excluded.updated_at",
+            (symbol, entry["address"], entry["balance"], entry["unit"], entry["updated_at"]),
+        )
+
+
 async def refresh_wallet_balances():
     global latest_wallets
-    cfg = get_customization(); wallets = {"btc": None, "bch": None, "alph": None, "updated_at": int(time.time()), "errors": {}}
+    cfg = get_customization(); now = int(time.time())
+    wallets = {"btc": None, "bch": None, "alph": None, "updated_at": now, "errors": {}}
+    for symbol in ("btc", "bch", "alph"):
+        previous = latest_wallets.get(symbol)
+        address = cfg.get(f"{symbol}_wallet_address", "")
+        if previous and previous.get("address") == address:
+            wallets[symbol] = {**previous, "stale": False}
     async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.0)) as client:
         btc_address = cfg.get("btc_wallet_address", "")
         if btc_address:
@@ -2257,8 +2295,10 @@ async def refresh_wallet_balances():
                 rb = await client.get(cfg.get("block_api_base", "https://mempool.space/api").rstrip("/") + "/address/" + btc_address)
                 rb.raise_for_status(); a = rb.json(); chain = a.get("chain_stats") or {}; mem = a.get("mempool_stats") or {}
                 sats = (chain.get("funded_txo_sum",0)-chain.get("spent_txo_sum",0)) + (mem.get("funded_txo_sum",0)-mem.get("spent_txo_sum",0))
-                wallets["btc"] = {"address": btc_address, "balance": sats / 100_000_000, "unit": "BTC"}
-            except Exception as e: wallets["errors"]["btc"] = str(e)
+                wallets["btc"] = {"address": btc_address, "balance": sats / 100_000_000, "unit": "BTC", "updated_at": now, "stale": False}; save_wallet_cache("btc", wallets["btc"])
+            except Exception as e:
+                wallets["errors"]["btc"] = str(e)
+                if wallets["btc"]: wallets["btc"]["stale"] = True
         bch_address = cfg.get("bch_wallet_address", "")
         if bch_address:
             try:
@@ -2269,17 +2309,30 @@ async def refresh_wallet_balances():
                     + "?details=basic"
                 )
                 rw.raise_for_status(); entry = rw.json(); sats = entry.get("balance")
-                wallets["bch"] = {"address": bch_address, "balance": (int(sats)/100_000_000) if sats is not None else None, "unit": "BCH"}
-            except Exception as e: wallets["errors"]["bch"] = str(e)
+                wallets["bch"] = {"address": bch_address, "balance": (int(sats)/100_000_000) if sats is not None else None, "unit": "BCH", "updated_at": now, "stale": False}; save_wallet_cache("bch", wallets["bch"])
+            except Exception as e:
+                wallets["errors"]["bch"] = str(e)
+                if wallets["bch"]: wallets["bch"]["stale"] = True
         alph_address = cfg.get("alph_wallet_address", "")
         if alph_address:
             try:
                 ra = await client.get("https://backend.mainnet.alephium.org/addresses/" + quote(alph_address, safe="") + "/balance")
                 ra.raise_for_status(); entry = ra.json(); atto = entry.get("balance")
-                wallets["alph"] = {"address": alph_address, "balance": (int(atto)/1_000_000_000_000_000_000) if atto is not None else None, "unit": "ALPH"}
-            except Exception as e: wallets["errors"]["alph"] = str(e)
+                wallets["alph"] = {"address": alph_address, "balance": (int(atto)/1_000_000_000_000_000_000) if atto is not None else None, "unit": "ALPH", "updated_at": now, "stale": False}; save_wallet_cache("alph", wallets["alph"])
+            except Exception as e:
+                wallets["errors"]["alph"] = str(e)
+                if wallets["alph"]: wallets["alph"]["stale"] = True
     latest_wallets = wallets
     return wallets
+
+
+async def wallet_watcher():
+    while True:
+        try:
+            await refresh_wallet_balances()
+        except Exception:
+            pass
+        await asyncio.sleep(6 * 60 * 60)
 
 @app.post("/api/wallets/refresh")
 async def wallets_refresh():
@@ -2399,7 +2452,7 @@ async def price_watcher():
                         "include_24hr_change": "true",
                         "include_last_updated_at": "true",
                     },
-                    headers={"accept": "application/json", "user-agent": "RigPulse/0.6.0"},
+                    headers={"accept": "application/json", "user-agent": "RigPulse/0.6.1"},
                 )
                 response.raise_for_status(); data = response.json()
             prices: dict[str, Any] = {"updated_at": int(time.time()), "source": "CoinGecko", "available": True}
@@ -2415,7 +2468,7 @@ async def price_watcher():
         await asyncio.sleep(60)
 
 async def bch_watcher():
-    global latest_bch, latest_wallets
+    global latest_bch
     while True:
         try:
             cfg = get_customization()
@@ -2431,11 +2484,9 @@ async def bch_watcher():
                     "mempool_transactions": stats.get("mempool_transactions"),
                     "updated_at": int(time.time()),
                 }
-            await refresh_wallet_balances()
         except Exception as e:
             if not latest_bch.get("available"):
                 latest_bch = {"available": False, "source": "api.blockchair.com", "error": str(e), "updated_at": int(time.time())}
-            latest_wallets = {**latest_wallets, "error": str(e), "updated_at": int(time.time())}
         await asyncio.sleep(60)
 
 def _telemetry_pool_identity(t: Telemetry | None) -> tuple[str, str]:
@@ -2954,7 +3005,7 @@ body.sidebar-hidden .app{grid-template-columns:1fr}body.sidebar-hidden .sidebar{
 @media(max-width:700px){.alert-grid{grid-template-columns:1fr}}
 .event-table{width:100%;border-collapse:collapse}.event-table td,.event-table th{padding:8px;border-bottom:1px solid #172a40;text-align:left;font-size:12px}.event-table th{color:#8da0b8}.clickable{cursor:pointer}.sort-select{background:#0d1827;color:white;border:1px solid #22354a;padding:9px 12px;border-radius:10px}@media(max-width:800px){.detail-grid{grid-template-columns:repeat(2,1fr)}}
 
-.chain-strips{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.block-strip{margin-top:12px;padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center;overflow:hidden;position:relative;min-width:0}.wallet-strip{margin-top:10px;padding:10px 14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}.wallet-item{color:#8fa4bb;font-size:11px}.wallet-item b{color:#fff;font-size:14px;margin-left:5px}.market-price{color:#fff!important;font-size:14px;font-weight:900}.price-change{font-size:10px;margin-left:5px}.price-change.up{color:#37e488}.price-change.down{color:#ff6577}.alph-strip .block-icon{color:#d576ff;background:rgba(213,118,255,.12);border-color:rgba(213,118,255,.35)}.alph-strip .block-height{color:#d576ff}
+.chain-strips{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.block-strip{margin-top:12px;padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center;overflow:hidden;position:relative;min-width:0}.wallet-strip{margin-top:10px;padding:10px 14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}.wallet-item{color:#8fa4bb;font-size:11px}.wallet-item b{color:#fff;font-size:14px;margin-left:5px}.wallet-freshness{margin-left:auto;color:#7890a8;font-size:10px}.wallet-freshness.stale{color:#ffbd59}.market-price{color:#fff!important;font-size:14px;font-weight:900}.price-change{font-size:10px;margin-left:5px}.price-change.up{color:#37e488}.price-change.down{color:#ff6577}.alph-strip .block-icon{color:#d576ff;background:rgba(213,118,255,.12);border-color:rgba(213,118,255,.35)}.alph-strip .block-height{color:#d576ff}
 .block-strip::after{content:"";position:absolute;inset:auto -10% -80% auto;width:240px;height:180px;background:radial-gradient(circle,rgba(247,147,26,.16),transparent 65%);pointer-events:none}
 .block-icon{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;font-size:25px;background:rgba(247,147,26,.12);border:1px solid rgba(247,147,26,.35)}
 .coin-summary-card{min-height:82px!important;padding:12px 14px!important;grid-template-columns:58px 1fr auto!important;gap:12px!important;cursor:pointer;transition:transform .16s ease,border-color .16s ease}.coin-summary-card:hover{transform:translateY(-2px);border-color:rgba(var(--accent-rgb),.65)}.coin-logo{width:54px;height:54px;object-fit:contain;border-radius:13px;background:#fff}.coin-quote{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}.coin-summary-card .market-price{font-size:clamp(21px,2vw,29px)!important}.coin-summary-card .price-change{font-size:11px}.coin-summary-card::after{display:none}
@@ -3104,7 +3155,7 @@ body.theme-nerd-console .grid{grid-template-columns:repeat(auto-fit,minmax(390px
   </section><section class="card block-strip alph-strip coin-summary-card" id="alphMarketBlock" onclick="openCoinDetails('alph')">
     <img class="coin-logo" src="/assets/alph.png" alt="Alephium"><div class="coin-quote"><b class="market-price" id="alphPrice">—</b><i class="price-change" id="alphPriceChange"></i></div><div class="status orange" id="alphPriceState">● WAITING</div>
   </section></div>
-  <div class="dashboard-panels" id="dashboardPanels"><section class="card wallet-strip" id="walletStrip"><b>Public Wallet Balances</b><span class="wallet-item">BTC <b id="btcBalance">Not configured</b></span><span class="wallet-item">BCH <b id="bchBalance">Not configured</b></span><span class="wallet-item">ALPH <b id="alphBalance">Updating…</b></span></section>
+  <div class="dashboard-panels" id="dashboardPanels"><section class="card wallet-strip" id="walletStrip"><b>Public Wallet Balances</b><span class="wallet-item">BTC <b id="btcBalance">Not configured</b></span><span class="wallet-item">BCH <b id="bchBalance">Not configured</b></span><span class="wallet-item">ALPH <b id="alphBalance">Updating…</b></span><span class="wallet-freshness" id="walletFreshness">Updating…</span></section>
   <section class="card solopool-strip" id="solopoolStrip"><div class="solopool-title">SoloPool Status</div><div class="solopool-item"><b>BTC POOL</b><div id="btcSoloPoolStatus"><div class="solopool-hash">—</div><div class="solopool-stats"><span>Not configured</span></div></div></div><div class="solopool-item bch"><b>BCH POOL</b><div id="bchSoloPoolStatus"><div class="solopool-hash">—</div><div class="solopool-stats"><span>Not configured</span></div></div></div></section>
   <section class="card stream" id="shareStream">
     <div class="stream-title"><b>🟢 Live Share Stream</b><small id="wsState">connecting…</small></div>
@@ -3537,6 +3588,7 @@ function renderSoloPool(coin,p,configured){const el=$(coin+'SoloPoolStatus'),ite
 function hashFromHs(v){if(v==null)return'—';let n=Number(v);if(n>=1e15)return(n/1e15).toFixed(2)+' PH/s';if(n>=1e12)return(n/1e12).toFixed(2)+' TH/s';if(n>=1e9)return(n/1e9).toFixed(2)+' GH/s';return n.toLocaleString()+' H/s'}
 function renderPrice(symbol,p){const value=$(symbol+'Price'),change=$(symbol+'PriceChange');if(!p||p.usd==null){value.textContent='Unavailable';change.textContent='';change.className='price-change';if(symbol==='alph'){$('alphPriceState').textContent='● WAITING';$('alphPriceState').className='status orange'}return}const n=Number(p.usd),digits=n>=1000?0:n>=1?2:n>=.01?3:5;value.textContent=n.toLocaleString(undefined,{style:'currency',currency:'USD',minimumFractionDigits:digits,maximumFractionDigits:digits});const c=Number(p.change_24h);if(Number.isFinite(c)){change.textContent=`${c>=0?'+':''}${c.toFixed(2)}% 24h`;change.className=`price-change ${c>=0?'up':'down'}`}else{change.textContent='';change.className='price-change'}if(symbol==='alph'){$('alphPriceState').textContent='● LIVE';$('alphPriceState').className='status green'}}
 function walletText(entry,price,symbol){if(entry?.balance==null)return null;const amount=Number(entry.balance),usd=Number(price?.usd),fiat=Number.isFinite(usd)?` · ${(amount*usd).toLocaleString(undefined,{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2})}`:'';return `${amount.toFixed(8)} ${symbol}${fiat}`}
+function walletFreshness(w){const entries=['btc','bch','alph'].map(k=>w[k]).filter(Boolean),stamp=Math.max(0,...entries.map(x=>Number(x.updated_at||0))),stale=entries.some(x=>x.stale);if(!stamp)return['Waiting for first update',false];const age=blockAge(stamp);return[`${stale?'Cached balance · update failed':'Updated'} ${age} ago`,stale]}
 
 async function loadChainExtras(){
  try{
@@ -3544,6 +3596,7 @@ async function loadChainExtras(){
   if(b.available){$('bchBlockHeight').textContent=`BCH Block ${Number(b.height).toLocaleString()}`;$('bchBlockHash').textContent=shortHash(b.hash);$('bchBlockAge').textContent='Live';$('bchBlockTx').textContent=b.transactions_24h==null?'—':Number(b.transactions_24h).toLocaleString();$('bchMempool').textContent=b.mempool_transactions==null?'—':Number(b.mempool_transactions).toLocaleString();$('bchDifficulty').textContent=fmtDifficulty(b.difficulty);$('bchBlockState').textContent='● LIVE';$('bchBlockState').className='status green'}
   else{$('bchBlockHeight').textContent='BCH unavailable';$('bchBlockState').textContent='● WAITING';$('bchBlockState').className='status orange'}
   $('btcBalance').textContent=walletText(w.btc,prices.btc,'BTC')??(customization.btc_wallet_address?(w.errors?.btc?'Address/API error':'Updating…'):'Not configured');$('bchBalance').textContent=walletText(w.bch,prices.bch,'BCH')??(customization.bch_wallet_address?(w.errors?.bch?'Address/API error':'Updating…'):'Not configured');$('alphBalance').textContent=walletText(w.alph,prices.alph,'ALPH')??(customization.alph_wallet_address?(w.errors?.alph?'Address/API error':'Updating…'):'Not configured');
+  const [freshText,isStale]=walletFreshness(w);$('walletFreshness').textContent=freshText;$('walletFreshness').classList.toggle('stale',isStale);
   renderPrice('btc',prices.btc);renderPrice('bch',prices.bch);renderPrice('alph',prices.alph);
   renderSoloChance('btc',d.solo_chances?.btc);renderSoloChance('bch',d.solo_chances?.bch);renderSoloPool('btc',sp.btc,!!customization.btc_solopool_address);renderSoloPool('bch',sp.bch,!!customization.bch_solopool_address);
  }catch(e){}
