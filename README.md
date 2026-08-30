@@ -5,6 +5,13 @@
 RigPulse is a local-first dashboard for mixed ASIC mining fleets. It polls miners
 directly over the LAN and keeps monitoring data local.
 
+## v0.6.0
+
+This release introduces compact clickable BTC, BCH, and ALPH market cards with
+custom icons, dedicated coin detail views, and Alephium wallet tracking.
+
+See `RELEASE-NOTES-v0.6.0.md` for details.
+
 ## v0.5.13
 
 This release adds exact timestamp and hashrate inspection directly to the small
@@ -130,7 +137,7 @@ The Umbrel Community App Store is published separately from this source reposito
 The production Umbrel package expects a public GHCR image:
 
 ```text
-ghcr.io/loud-roar/rigpulse:0.5.13
+ghcr.io/loud-roar/rigpulse:0.6.0
 ```
 
 Source repository: `https://github.com/Loud-Roar/rigpulse`
