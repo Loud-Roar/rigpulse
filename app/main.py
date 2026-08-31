@@ -152,7 +152,7 @@ latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "errors": {}}
 latest_prices: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "source": "CoinGecko"}
 latest_solopool: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None, "errors": {}}
-app = FastAPI(title="RigPulse", version="0.6.1")
+app = FastAPI(title="RigPulse", version="0.6.2")
 
 
 def db():
@@ -1588,13 +1588,18 @@ def today_start_epoch()->int:
 
 def derive_today_shares(miner_id:int,current_accepted:int|None)->int|None:
     if current_accepted is None:return None
-    with db() as c: row=c.execute("SELECT accepted FROM samples WHERE miner_id=? AND ts>=? AND accepted IS NOT NULL ORDER BY ts ASC LIMIT 1",(miner_id,today_start_epoch())).fetchone()
-    return 0 if row is None or row["accepted"] is None else max(0,int(current_accepted)-int(row["accepted"]))
+    with db() as c: rows=c.execute("SELECT accepted FROM samples WHERE miner_id=? AND ts>=? AND accepted IS NOT NULL ORDER BY ts,id",(miner_id,today_start_epoch())).fetchall()
+    values=[int(row["accepted"]) for row in rows]
+    return sum(max(0,current-previous) for previous,current in zip(values,values[1:]))
 
 def derive_session_shares(miner_id:int,current_accepted:int|None)->int|None:
     if current_accepted is None:return None
-    with db() as c: row=c.execute("SELECT accepted FROM session_baselines WHERE miner_id=?",(miner_id,)).fetchone()
-    return 0 if row is None or row["accepted"] is None else max(0,int(current_accepted)-int(row["accepted"]))
+    with db() as c:
+        baseline=c.execute("SELECT accepted,started_at FROM session_baselines WHERE miner_id=?",(miner_id,)).fetchone()
+        if baseline is None or baseline["accepted"] is None:return 0
+        rows=c.execute("SELECT accepted FROM samples WHERE miner_id=? AND ts>=? AND accepted IS NOT NULL ORDER BY ts,id",(miner_id,baseline["started_at"])).fetchall()
+    values=[int(baseline["accepted"]),*[int(row["accepted"]) for row in rows]]
+    return sum(max(0,current-previous) for previous,current in zip(values,values[1:]))
 
 
 async def collector():
@@ -1606,7 +1611,9 @@ async def collector():
             for miner in miners:
                 t = enrich_share_telemetry(await poll_miner(miner))
                 ts = int(time.time())
+                ensure_session_baseline(miner["id"], t.accepted, t.rejected)
                 with db() as c:
+                    prior = c.execute("SELECT accepted FROM samples WHERE miner_id=? AND accepted IS NOT NULL ORDER BY ts DESC,id DESC LIMIT 1", (miner["id"],)).fetchone()
                     c.execute("""INSERT INTO samples(miner_id,ts,hashrate,hashrate_unit,temp_c,power_w,accepted,rejected,best_share,online)
                                  VALUES(?,?,?,?,?,?,?,?,?,?)""",
                               (miner["id"], ts, t.hashrate, t.hashrate_unit, t.temp_c, t.power_w,
@@ -1615,8 +1622,10 @@ async def collector():
                     c.execute("DELETE FROM samples WHERE ts < ?", (ts - 30*86400,))
 
                 old = previous.get(miner["id"])
-                if old and old.accepted is not None and t.accepted is not None and t.accepted > old.accepted:
-                    delta = min(t.accepted - old.accepted, 25)
+                old_accepted = old.accepted if old and old.accepted is not None else (int(prior["accepted"]) if prior and prior["accepted"] is not None else None)
+                if old_accepted is not None and t.accepted is not None and t.accepted > old_accepted:
+                    delta = min(t.accepted - old_accepted, 25)
+                    record_event(miner["id"], "accepted_share", value_num=delta, details={"accepted": t.accepted, "algorithm": miner["algorithm"]})
                     await manager.broadcast({"type":"share","miner_id":miner["id"],"miner_name":miner["name"],"algorithm":miner["algorithm"],"count":delta})
                 old_best = _best_share_number(old.best_share) if old else None
                 new_best = _best_share_number(t.best_share)
@@ -1658,6 +1667,8 @@ async def collector():
 @app.on_event("startup")
 async def startup():
     init_db()
+    with db() as c:
+        c.execute("DELETE FROM session_baselines")
     load_cached_wallet_balances()
     asyncio.create_task(collector())
     asyncio.create_task(block_watcher())
@@ -2452,7 +2463,7 @@ async def price_watcher():
                         "include_24hr_change": "true",
                         "include_last_updated_at": "true",
                     },
-                    headers={"accept": "application/json", "user-agent": "RigPulse/0.6.1"},
+                    headers={"accept": "application/json", "user-agent": "RigPulse/0.6.2"},
                 )
                 response.raise_for_status(); data = response.json()
             prices: dict[str, Any] = {"updated_at": int(time.time()), "source": "CoinGecko", "available": True}
