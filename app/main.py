@@ -152,7 +152,7 @@ latest_bch: dict[str, Any] = {"available": False, "source": "blockchair.com"}
 latest_wallets: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "errors": {}}
 latest_prices: dict[str, Any] = {"btc": None, "bch": None, "alph": None, "updated_at": None, "source": "CoinGecko"}
 latest_solopool: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None, "errors": {}}
-app = FastAPI(title="RigPulse", version="0.6.2")
+app = FastAPI(title="RigPulse", version="0.6.3")
 
 
 def db():
@@ -507,6 +507,42 @@ def parse_avalon(parts: dict[str, Any]) -> Telemetry:
             "primary_pool": primary_pool,
         },
     )
+
+
+async def overlay_avalon_cglog(ip: str, telemetry: Telemetry) -> Telemetry:
+    """Use the Nano web dashboard counters when its TCP cgminer API is stale."""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(4.0, connect=2.0), follow_redirects=True) as client:
+            response = await client.get(
+                f"http://{ip}/cglog.cgi",
+                params={"_": str(int(time.time() * 1000))},
+                headers={"cache-control": "no-cache", "pragma": "no-cache"},
+            )
+            response.raise_for_status()
+        text = response.text
+        fields = {
+            "accepted": r"['\"]Accepted['\"]\s*:\s*(\d+)",
+            "rejected": r"['\"]Rejected['\"]\s*:\s*(\d+)",
+            "best_share": r"['\"]Best Share['\"]\s*:\s*(\d+(?:\.\d+)?)",
+            "elapsed": r"['\"]Elapsed['\"]\s*:\s*(\d+)",
+        }
+        values: dict[str, Any] = {}
+        for key, pattern in fields.items():
+            match = re.search(pattern, text)
+            if match:
+                values[key] = match.group(1)
+        if "accepted" in values:
+            telemetry.accepted = int(values["accepted"])
+        if "rejected" in values:
+            telemetry.rejected = int(values["rejected"])
+        if "best_share" in values:
+            telemetry.best_share = str(values["best_share"])
+        if "elapsed" in values:
+            telemetry.uptime_s = int(values["elapsed"])
+        telemetry.raw = {**(telemetry.raw or {}), "cglog_overlay": values, "accepted_source": "cglog.cgi"}
+    except Exception as exc:
+        telemetry.raw = {**(telemetry.raw or {}), "cglog_overlay_error": str(exc), "accepted_source": "cgminer TCP"}
+    return telemetry
 
 
 
@@ -1438,7 +1474,10 @@ async def poll_miner(miner: sqlite3.Row) -> Telemetry:
     try:
         if family in ("cgminer","avalon","luxos"):
             t = await cgminer_probe(ip, algorithm, family)
-            if t: return t
+            if t:
+                if family == "avalon":
+                    t = await overlay_avalon_cglog(ip, t)
+                return t
             t = await http_probe(ip, algorithm, "auto")
             if t: return t
         elif family == "goldshell":
@@ -2463,7 +2502,7 @@ async def price_watcher():
                         "include_24hr_change": "true",
                         "include_last_updated_at": "true",
                     },
-                    headers={"accept": "application/json", "user-agent": "RigPulse/0.6.2"},
+                    headers={"accept": "application/json", "user-agent": "RigPulse/0.6.3"},
                 )
                 response.raise_for_status(); data = response.json()
             prices: dict[str, Any] = {"updated_at": int(time.time()), "source": "CoinGecko", "available": True}
