@@ -5,6 +5,13 @@
 RigPulse is a local-first dashboard for mixed ASIC mining fleets. It polls miners
 directly over the LAN and keeps monitoring data local.
 
+## v0.6.4
+
+SoloPool worker shares now provide a password-free fallback for Canaan Nano
+miners whose local TCP accepted-share counter is frozen behind an authenticated UI.
+
+See `RELEASE-NOTES-v0.6.4.md` for details.
+
 ## v0.6.3
 
 Canaan Nano miners now read accepted-share counters from the live web dashboard
@@ -158,7 +165,7 @@ The Umbrel Community App Store is published separately from this source reposito
 The production Umbrel package expects a public GHCR image:
 
 ```text
-ghcr.io/loud-roar/rigpulse:0.6.3
+ghcr.io/loud-roar/rigpulse:0.6.4
 ```
 
 Source repository: `https://github.com/Loud-Roar/rigpulse`
