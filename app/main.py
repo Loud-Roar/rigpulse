@@ -120,6 +120,9 @@ class CustomizationIn(BaseModel):
     ntfy_best_share_alerts: bool = True
     ntfy_block_alerts: bool = True
     ntfy_warning_alerts: bool = True
+    home_assistant_enabled: bool = False
+    home_assistant_url: str = "http://192.168.0.129:8123"
+    home_assistant_token: str = ""
 
 
 class WSManager:
@@ -155,7 +158,7 @@ latest_solopool: dict[str, Any] = {"btc": None, "bch": None, "updated_at": None,
 latest_pool_worker_counts: dict[str, int] = {}
 last_local_share_at: dict[int, int] = {}
 last_pool_fallback_at: dict[int, int] = {}
-app = FastAPI(title="RigPulse", version="0.6.4")
+app = FastAPI(title="RigPulse", version="0.7.0")
 
 
 def db():
@@ -252,6 +255,9 @@ def init_db():
             "ntfy_best_share_alerts": "true",
             "ntfy_block_alerts": "true",
             "ntfy_warning_alerts": "true",
+            "home_assistant_enabled": "false",
+            "home_assistant_url": "http://192.168.0.129:8123",
+            "home_assistant_token": "",
         }
         for k,v in defaults.items():
             c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k,v))
@@ -299,6 +305,9 @@ def get_customization():
         "ntfy_best_share_alerts": rows.get("ntfy_best_share_alerts", "true") == "true",
         "ntfy_block_alerts": rows.get("ntfy_block_alerts", "true") == "true",
         "ntfy_warning_alerts": rows.get("ntfy_warning_alerts", "true") == "true",
+        "home_assistant_enabled": rows.get("home_assistant_enabled", "false") == "true",
+        "home_assistant_url": rows.get("home_assistant_url", "http://192.168.0.129:8123").strip().rstrip("/"),
+        "home_assistant_token": rows.get("home_assistant_token", "").strip(),
     }
 
 
@@ -1540,6 +1549,98 @@ async def send_ntfy(title: str, message: str, *, priority: int = 4, tags: list[s
         response.raise_for_status()
     return True
 
+def _ha_config(require_enabled: bool = True) -> tuple[str, dict[str, str]]:
+    cfg = get_customization()
+    if require_enabled and not cfg.get("home_assistant_enabled"):
+        raise ValueError("Home Assistant publishing is disabled")
+    url = str(cfg.get("home_assistant_url") or "").strip().rstrip("/")
+    token = str(cfg.get("home_assistant_token") or "").strip()
+    if not re.match(r"^https?://[^/]+", url, re.I):
+        raise ValueError("Home Assistant URL must start with http:// or https://")
+    if not token:
+        raise ValueError("Enter a Home Assistant long-lived access token")
+    return url, {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+def _ha_slug(value: Any) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+    return slug or "unknown"
+
+async def send_home_assistant_event(event_type: str, data: dict[str, Any]) -> bool:
+    try:
+        url, headers = _ha_config()
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+            response = await client.post(f"{url}/api/events/rigpulse_{_ha_slug(event_type)}", json=data, headers=headers)
+            response.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+async def _ha_set_state(client: httpx.AsyncClient, base: str, headers: dict[str, str], entity_id: str, state: Any, attributes: dict[str, Any]):
+    response = await client.post(f"{base}/api/states/{entity_id}", json={"state": state, "attributes": attributes}, headers=headers)
+    response.raise_for_status()
+
+async def publish_home_assistant_states() -> int:
+    base, headers = _ha_config()
+    miners = miners_get()
+    now = int(time.time())
+    published = 0
+    async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+        for miner in miners:
+            telemetry = miner.get("telemetry") or {}
+            slug = _ha_slug(f"{miner.get('id')}_{miner.get('name')}")
+            online = bool(telemetry.get("online"))
+            await _ha_set_state(client, base, headers, f"binary_sensor.rigpulse_{slug}_online", "on" if online else "off", {
+                "friendly_name": f"RigPulse {miner.get('name')} Online", "device_class": "connectivity", "icon": "mdi:pickaxe",
+                "miner_id": miner.get("id"), "model": miner.get("model"), "algorithm": miner.get("algorithm"), "ip": miner.get("ip"), "updated_at": now,
+            }); published += 1
+            hashrate = telemetry.get("hashrate")
+            await _ha_set_state(client, base, headers, f"sensor.rigpulse_{slug}_hashrate", hashrate if hashrate is not None else "unknown", {
+                "friendly_name": f"RigPulse {miner.get('name')} Hashrate", "icon": "mdi:speedometer", "unit_of_measurement": telemetry.get("hashrate_unit") or "",
+                "miner_id": miner.get("id"), "model": miner.get("model"), "algorithm": miner.get("algorithm"), "ip": miner.get("ip"),
+                "temperature_c": telemetry.get("temp_c"), "power_w": telemetry.get("power_w"), "fan_rpm": telemetry.get("fan_rpm"),
+                "efficiency": telemetry.get("efficiency"), "current_share_difficulty": telemetry.get("current_share"), "best_share": telemetry.get("best_share"),
+                "accepted": telemetry.get("accepted"), "rejected": telemetry.get("rejected"), "shares_today": miner.get("shares_today"),
+                "shares_session": miner.get("shares_session"), "shares_lifetime": miner.get("shares_lifetime"), "pool_alive": telemetry.get("pool_alive"), "updated_at": now,
+            }); published += 1
+        summary = fleet_summary()
+        online_count = int(summary.get("online") or 0)
+        await _ha_set_state(client, base, headers, "sensor.rigpulse_fleet", online_count, {
+            "friendly_name": "RigPulse Fleet", "icon": "mdi:server-network", "unit_of_measurement": "miners online",
+            "total_miners": len(miners), "online_miners": online_count, "algorithms": summary.get("algorithms"),
+            "known_power_w": summary.get("known_power_w"), "average_temperature_c": summary.get("avg_temp_c"),
+            "shares_today": summary.get("shares_today"), "shares_session": summary.get("shares_session"),
+            "shares_lifetime": summary.get("shares_lifetime"), "fleet_best_share": summary.get("fleet_best"), "updated_at": now,
+        }); published += 1
+        for coin in ("btc", "bch", "alph"):
+            wallet = latest_wallets.get(coin)
+            if isinstance(wallet, dict) and wallet.get("balance") is not None:
+                price = latest_prices.get(coin) or {}
+                usd_price = price.get("usd") if isinstance(price, dict) else None
+                balance = wallet.get("balance")
+                await _ha_set_state(client, base, headers, f"sensor.rigpulse_{coin}_wallet", balance, {
+                    "friendly_name": f"RigPulse {coin.upper()} Wallet", "icon": "mdi:wallet", "unit_of_measurement": coin.upper(),
+                    "address": wallet.get("address"), "usd_value": (float(balance) * float(usd_price)) if usd_price is not None else None,
+                    "updated_at": wallet.get("updated_at") or latest_wallets.get("updated_at"),
+                }); published += 1
+        for coin in ("btc", "bch"):
+            pool = latest_solopool.get(coin)
+            if isinstance(pool, dict):
+                await _ha_set_state(client, base, headers, f"sensor.rigpulse_{coin}_solopool", pool.get("hashrate") if pool.get("hashrate") is not None else "unknown", {
+                    "friendly_name": f"RigPulse {coin.upper()} SoloPool", "icon": "mdi:pool", "unit_of_measurement": "H/s",
+                    "average_hashrate": pool.get("average_hashrate"), "online_workers": pool.get("online_workers"), "total_workers": pool.get("total_workers"),
+                    "last_share": pool.get("last_share"), "best_share": pool.get("best_share"), "blocks_found": pool.get("total_blocks"), "updated_at": latest_solopool.get("updated_at"),
+                }); published += 1
+    return published
+
+async def home_assistant_watcher():
+    while True:
+        try:
+            if get_customization().get("home_assistant_enabled"):
+                await publish_home_assistant_states()
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
 async def check_solopool_best_share(coin: str, address: str, raw_value: Any):
     current = _best_share_number(raw_value)
     if current is None: return
@@ -1556,6 +1657,7 @@ async def check_solopool_best_share(coin: str, address: str, raw_value: Any):
         details = {"coin":coin.upper(),"address":address,"previous":previous,"current":current,"source":f"{coin}.solopool.org"}
         record_event(None, "solopool_best_share", value_text=str(raw_value), value_num=current, details=details)
         await manager.broadcast({"type":"solopool_best_share", **details})
+        await send_home_assistant_event("best_share", {"scope":"solopool", **details})
         if get_customization().get("ntfy_best_share_alerts", True):
             try:
                 await send_ntfy(f"RigPulse: New {coin.upper()} SoloPool Best Share", f"New pool best: {_share_display(current)}\nPrevious: {_share_display(previous)}", tags=["trophy","pick"])
@@ -1614,6 +1716,7 @@ async def reconcile_block_claim(miner: sqlite3.Row, t: Telemetry):
         details = {"found_count": t.found_blocks, "pool_key": new_pool, "algorithm": miner["algorithm"]}
         record_event(miner["id"], "block_found", value_text=str(t.found_blocks), details=details)
         await manager.broadcast({"type":"block_found","miner_id":miner["id"],"miner_name":miner["name"],"algorithm":miner["algorithm"],"found_count":t.found_blocks,"ts":now})
+        await send_home_assistant_event("block_found", {"miner_id":miner["id"],"miner_name":miner["name"],"ts":now,**details})
         if get_customization().get("ntfy_block_alerts", True):
             try:
                 await send_ntfy("RigPulse: BLOCK FOUND!", f"{miner['name']} reported a newly found block.", priority=5, tags=["tada","pick"], channel="block")
@@ -1677,12 +1780,13 @@ async def collector():
                     details = {"previous":old_best,"current":new_best,"algorithm":miner["algorithm"]}
                     record_event(miner["id"], "best_share", value_text=str(t.best_share), value_num=new_best, details=details)
                     await manager.broadcast({"type":"best_share","miner_id":miner["id"],"miner_name":miner["name"],"value":t.best_share})
+                    await send_home_assistant_event("best_share", {"scope":"miner","miner_id":miner["id"],"miner_name":miner["name"],**details})
                     if get_customization().get("ntfy_best_share_alerts", True):
                         try:
                             await send_ntfy(f"RigPulse: New Best Share — {miner['name']}", f"New miner best: {_share_display(new_best)}\nPrevious: {_share_display(old_best)}", tags=["trophy","pick"])
                         except Exception:
                             pass
-                if old and get_customization().get("ntfy_warning_alerts", True):
+                if old:
                     alerts = get_alert_settings()
                     warning = None
                     if old.online and not t.online:
@@ -1692,10 +1796,12 @@ async def collector():
                     elif t.temp_c is not None and float(t.temp_c) >= float(alerts.get("temperature_c", 75)) and (old.temp_c is None or float(old.temp_c) < float(alerts.get("temperature_c", 75))):
                         warning = (f"RigPulse: {miner['name']} Temperature Warning", f"Temperature reached {float(t.temp_c):.0f}°C.", "thermometer")
                     if warning:
-                        try:
-                            await send_ntfy(warning[0], warning[1], priority=4, tags=[warning[2],"pick"], channel="warning")
-                        except Exception:
-                            pass
+                        await send_home_assistant_event("warning", {"miner_id":miner["id"],"miner_name":miner["name"],"title":warning[0],"message":warning[1],"category":warning[2],"ts":ts})
+                        if get_customization().get("ntfy_warning_alerts", True):
+                            try:
+                                await send_ntfy(warning[0], warning[1], priority=4, tags=[warning[2],"pick"], channel="warning")
+                            except Exception:
+                                pass
                 await reconcile_block_claim(miner, t)
                 pool_url, _pool_user = _telemetry_pool_identity(t)
                 if pool_url and "solopool.org" not in pool_url.lower():
@@ -1721,6 +1827,7 @@ async def startup():
     asyncio.create_task(price_watcher())
     asyncio.create_task(solopool_watcher())
     asyncio.create_task(wallet_watcher())
+    asyncio.create_task(home_assistant_watcher())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2272,6 +2379,20 @@ async def ntfy_test(channel: str):
         raise HTTPException(502, f"ntfy test failed: {e}")
 
 
+@app.post("/api/home-assistant/test")
+async def home_assistant_test():
+    try:
+        base, headers = _ha_config()
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+            response = await client.get(f"{base}/api/", headers=headers)
+            response.raise_for_status()
+        published = await publish_home_assistant_states()
+        await send_home_assistant_event("test", {"message":"RigPulse is connected", "published_entities":published, "ts":int(time.time())})
+        return {"ok": True, "published_entities": published}
+    except Exception as e:
+        raise HTTPException(502, f"Home Assistant test failed: {e}")
+
+
 @app.get("/api/block-status")
 def block_status():
     return latest_block
@@ -2510,7 +2631,7 @@ async def price_watcher():
                         "include_24hr_change": "true",
                         "include_last_updated_at": "true",
                     },
-                    headers={"accept": "application/json", "user-agent": "RigPulse/0.6.4"},
+                    headers={"accept": "application/json", "user-agent": "RigPulse/0.7.0"},
                 )
                 response.raise_for_status(); data = response.json()
             prices: dict[str, Any] = {"updated_at": int(time.time()), "source": "CoinGecko", "available": True}
@@ -2660,6 +2781,7 @@ async def solopool_watcher():
                                 details = {"source":f"{coin}.solopool.org","pool_address":address,"worker":worker,"hash":block_hash,"height":block.get("height"),"share_diff":block.get("shareDiff"),"reward":block.get("minerReward"),"algorithm":winner["algorithm"]}
                                 record_event(winner["id"], "block_found", value_text=str(block.get("height") or ""), details=details)
                                 await manager.broadcast({"type":"block_found","miner_id":winner["id"],"miner_name":winner["name"],"algorithm":winner["algorithm"],"worker":worker,"height":block.get("height"),"share_diff":block.get("shareDiff"),"ts":block.get("timestamp")})
+                                await send_home_assistant_event("block_found", {"miner_id":winner["id"],"miner_name":winner["name"],**details})
                                 if get_customization().get("ntfy_block_alerts", True):
                                     try:
                                         await send_ntfy(f"RigPulse: {coin.upper()} BLOCK FOUND!", f"{winner['name']} found block {block.get('height') or ''} on {coin.upper()} SoloPool.", priority=5, tags=["tada","pick"], channel="block")
@@ -3329,6 +3451,12 @@ body.theme-nerd-console .grid{grid-template-columns:repeat(auto-fit,minmax(390px
 <div class="field"><label>Warning topic</label><input id="cNtfyWarningTopic" placeholder="rigpulse-warnings"><div class="sub">Subscribe to each topic in ntfy and assign its sound on your phone.</div></div>
 <div class="field"><label>Access token (optional)</label><input id="cNtfyToken" type="password" autocomplete="off" placeholder="tk_…"><div class="sub">Only needed for a protected topic or self-hosted ntfy server.</div></div>
 <div class="actions" style="justify-content:flex-start;flex-wrap:wrap"><button class="btn" type="button" onclick="testNtfy('best')">Test Best Share</button><button class="btn" type="button" onclick="testNtfy('block')">Test Block Found</button><button class="btn" type="button" onclick="testNtfy('warning')">Test Warning</button></div>
+<h3 style="margin:18px 0 4px">Home Assistant</h3>
+<div class="sub">Publishes read-only RigPulse miner, fleet, wallet, and SoloPool entities every minute. It also fires events for best shares, warnings, and blocks.</div>
+<label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input id="cHaEnabled" type="checkbox"> Enable Home Assistant publishing</label>
+<div class="field"><label>Home Assistant URL</label><input id="cHaUrl" value="http://192.168.0.129:8123" placeholder="http://192.168.0.129:8123"></div>
+<div class="field"><label>Long-lived access token</label><input id="cHaToken" type="password" autocomplete="off" placeholder="Paste token here"><div class="sub">Stored locally by RigPulse and only sent to your Home Assistant server.</div></div>
+<div class="actions" style="justify-content:flex-start"><button class="btn" type="button" onclick="testHomeAssistant()">Test Home Assistant</button></div>
 <div class="actions"><button class="btn" onclick="resetDashboardLayout()">Reset Box Layout</button><button class="btn" onclick="resetCustomization()">Reset Theme</button><button class="btn primary" onclick="saveCustomization()">Save Customization</button></div>
 </div></div>
 
@@ -3389,7 +3517,7 @@ body.theme-nerd-console .grid{grid-template-columns:repeat(auto-fit,minmax(390px
 </div>
 </div></div>
 <script>
-let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:"",alph_wallet_address:"",btc_solopool_address:"",bch_solopool_address:"",btc_solo_hashrate:0,btc_solo_hashrate_unit:"TH",bch_solo_hashrate:0,bch_solo_hashrate_unit:"TH",ntfy_enabled:false,ntfy_server:"https://ntfy.sh",ntfy_topic:"",ntfy_block_topic:"",ntfy_warning_topic:"",ntfy_token:"",ntfy_best_share_alerts:true,ntfy_block_alerts:true,ntfy_warning_alerts:true}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
+let miners=[], settings={share_emoji:"🎉",share_emoji_sha256:"🎉",share_emoji_blake3:"🎉",share_emoji_default:"🎉",animation_density:7}, customization={theme:"midnight",card_opacity:.82,blur_px:14,background_intensity:1,compact_cards:false,block_api_base:"https://mempool.space/api",btc_wallet_address:"",bch_wallet_address:"",alph_wallet_address:"",btc_solopool_address:"",bch_solopool_address:"",btc_solo_hashrate:0,btc_solo_hashrate_unit:"TH",bch_solo_hashrate:0,bch_solo_hashrate_unit:"TH",ntfy_enabled:false,ntfy_server:"https://ntfy.sh",ntfy_topic:"",ntfy_block_topic:"",ntfy_warning_topic:"",ntfy_token:"",ntfy_best_share_alerts:true,ntfy_block_alerts:true,ntfy_warning_alerts:true,home_assistant_enabled:false,home_assistant_url:"http://192.168.0.129:8123",home_assistant_token:""}, filter='all', editingMinerId=null, sortBy='name', selectedMinerId=null, activeEmojiField='shareEmojiDefault', fleetBestMinerId=null, sparkCache=new Map(), lastBlockFound=null;
 const LAYOUT_KEY='rigpulse-dashboard-layout-v1',SIDEBAR_KEY='rigpulse-sidebar-hidden';let layoutEditing=false,draggedLayoutBox=null,defaultLayout={};
 function toggleSidebar(force){const hidden=force??!document.body.classList.contains('sidebar-hidden');document.body.classList.toggle('sidebar-hidden',hidden);localStorage.setItem(SIDEBAR_KEY,hidden?'1':'0');$('menuToggleBtn').textContent=hidden?'☰ Show Menu':'☰ Hide Menu'}
 function layoutContainers(){return ['summaryMetrics','chainStrips','dashboardPanels'].map($).filter(Boolean)}
@@ -3637,23 +3765,28 @@ function chooseBackground(theme){$('cTheme').value=theme;previewCustomization()}
 async function openCustomization(){
  customization=await fetch('/api/customization').then(r=>r.json());
  $('cTheme').value=customization.theme;$('cOpacity').value=customization.card_opacity;$('cBlur').value=customization.blur_px;
- $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';$('cAlphWallet').value=customization.alph_wallet_address||'';$('cBtcSoloPool').value=customization.btc_solopool_address||'';$('cBchSoloPool').value=customization.bch_solopool_address||'';$('cBtcSoloHash').value=customization.btc_solo_hashrate||'';$('cBtcSoloUnit').value=customization.btc_solo_hashrate_unit||'TH';$('cBchSoloHash').value=customization.bch_solo_hashrate||'';$('cBchSoloUnit').value=customization.bch_solo_hashrate_unit||'TH';$('cNtfyEnabled').checked=!!customization.ntfy_enabled;$('cNtfyServer').value=customization.ntfy_server||'https://ntfy.sh';$('cNtfyTopic').value=customization.ntfy_topic||'';$('cNtfyBlockTopic').value=customization.ntfy_block_topic||(customization.ntfy_topic?customization.ntfy_topic+'-block':'');$('cNtfyWarningTopic').value=customization.ntfy_warning_topic||(customization.ntfy_topic?customization.ntfy_topic+'-warning':'');$('cNtfyToken').value=customization.ntfy_token||'';$('cNtfyBest').checked=customization.ntfy_best_share_alerts!==false;$('cNtfyBlock').checked=customization.ntfy_block_alerts!==false;$('cNtfyWarning').checked=customization.ntfy_warning_alerts!==false;
+ $('cIntensity').value=customization.background_intensity;$('cCompact').checked=!!customization.compact_cards;$('cBlockApi').value=customization.block_api_base;$('cBtcWallet').value=customization.btc_wallet_address||'';$('cBchWallet').value=customization.bch_wallet_address||'';$('cAlphWallet').value=customization.alph_wallet_address||'';$('cBtcSoloPool').value=customization.btc_solopool_address||'';$('cBchSoloPool').value=customization.bch_solopool_address||'';$('cBtcSoloHash').value=customization.btc_solo_hashrate||'';$('cBtcSoloUnit').value=customization.btc_solo_hashrate_unit||'TH';$('cBchSoloHash').value=customization.bch_solo_hashrate||'';$('cBchSoloUnit').value=customization.bch_solo_hashrate_unit||'TH';$('cNtfyEnabled').checked=!!customization.ntfy_enabled;$('cNtfyServer').value=customization.ntfy_server||'https://ntfy.sh';$('cNtfyTopic').value=customization.ntfy_topic||'';$('cNtfyBlockTopic').value=customization.ntfy_block_topic||(customization.ntfy_topic?customization.ntfy_topic+'-block':'');$('cNtfyWarningTopic').value=customization.ntfy_warning_topic||(customization.ntfy_topic?customization.ntfy_topic+'-warning':'');$('cNtfyToken').value=customization.ntfy_token||'';$('cNtfyBest').checked=customization.ntfy_best_share_alerts!==false;$('cNtfyBlock').checked=customization.ntfy_block_alerts!==false;$('cNtfyWarning').checked=customization.ntfy_warning_alerts!==false;$('cHaEnabled').checked=!!customization.home_assistant_enabled;$('cHaUrl').value=customization.home_assistant_url||'http://192.168.0.129:8123';$('cHaToken').value=customization.home_assistant_token||'';
  previewCustomization();$('customModal').classList.add('show');
 }
 function closeCustomization(){$('customModal').classList.remove('show');applyCustomization(customization)}
 function resetCustomization(){
  $('cTheme').value='midnight';$('cOpacity').value=.82;$('cBlur').value=14;$('cIntensity').value=1;$('cCompact').checked=false;$('cBlockApi').value='https://mempool.space/api';$('cBtcWallet').value='';$('cBchWallet').value='';$('cAlphWallet').value='';$('cBtcSoloPool').value='';$('cBchSoloPool').value='';$('cBtcSoloHash').value='';$('cBchSoloHash').value='';$('cBtcSoloUnit').value='TH';$('cBchSoloUnit').value='TH';previewCustomization();
 }
+function customizationFormBody(){return {theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),alph_wallet_address:$('cAlphWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_block_topic:$('cNtfyBlockTopic').value.trim(),ntfy_warning_topic:$('cNtfyWarningTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked,ntfy_block_alerts:$('cNtfyBlock').checked,ntfy_warning_alerts:$('cNtfyWarning').checked,home_assistant_enabled:$('cHaEnabled').checked,home_assistant_url:$('cHaUrl').value.trim()||'http://192.168.0.129:8123',home_assistant_token:$('cHaToken').value.trim()}}
 async function saveCustomization(){
- const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),alph_wallet_address:$('cAlphWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_block_topic:$('cNtfyBlockTopic').value.trim(),ntfy_warning_topic:$('cNtfyWarningTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked,ntfy_block_alerts:$('cNtfyBlock').checked,ntfy_warning_alerts:$('cNtfyWarning').checked};
+ const body=customizationFormBody();
  const r=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
  if(!r.ok){toast('Could not save customization');return}
  customization=await r.json();applyCustomization(customization);$('customModal').classList.remove('show');$('btcBalance').textContent=customization.btc_wallet_address?'Updating…':'Not configured';$('bchBalance').textContent=customization.bch_wallet_address?'Updating…':'Not configured';$('alphBalance').textContent=customization.alph_wallet_address?'Updating…':'Not configured';toast('Customization saved');try{await fetch('/api/wallets/refresh',{method:'POST'});await loadChainExtras()}catch(e){toast('Saved — wallet service is temporarily unavailable')}setTimeout(loadBlockStatus,500);
 }
 async function testNtfy(channel='best'){
- const body={theme:$('cTheme').value,card_opacity:Number($('cOpacity').value),blur_px:Number($('cBlur').value),background_intensity:Number($('cIntensity').value),compact_cards:$('cCompact').checked,block_api_base:$('cBlockApi').value||'https://mempool.space/api',btc_wallet_address:$('cBtcWallet').value.trim(),bch_wallet_address:$('cBchWallet').value.trim(),alph_wallet_address:$('cAlphWallet').value.trim(),btc_solopool_address:$('cBtcSoloPool').value.trim(),bch_solopool_address:$('cBchSoloPool').value.trim(),btc_solo_hashrate:Number($('cBtcSoloHash').value||0),btc_solo_hashrate_unit:$('cBtcSoloUnit').value,bch_solo_hashrate:Number($('cBchSoloHash').value||0),bch_solo_hashrate_unit:$('cBchSoloUnit').value,ntfy_enabled:$('cNtfyEnabled').checked,ntfy_server:$('cNtfyServer').value.trim()||'https://ntfy.sh',ntfy_topic:$('cNtfyTopic').value.trim(),ntfy_block_topic:$('cNtfyBlockTopic').value.trim(),ntfy_warning_topic:$('cNtfyWarningTopic').value.trim(),ntfy_token:$('cNtfyToken').value.trim(),ntfy_best_share_alerts:$('cNtfyBest').checked,ntfy_block_alerts:$('cNtfyBlock').checked,ntfy_warning_alerts:$('cNtfyWarning').checked};
+ const body=customizationFormBody();
  const saved=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!saved.ok){toast('Could not save ntfy settings');return}customization=await saved.json();
  const r=await fetch(`/api/notifications/ntfy/test/${channel}`,{method:'POST'});if(r.ok){toast(`ntfy ${channel} test sent — check your phone`);return}let message='ntfy test failed';try{const e=await r.json();message=e.detail||message}catch(e){}toast(message)
+}
+async function testHomeAssistant(){
+ const saved=await fetch('/api/customization',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(customizationFormBody())});if(!saved.ok){toast('Could not save Home Assistant settings');return}customization=await saved.json();
+ toast('Testing Home Assistant…');const r=await fetch('/api/home-assistant/test',{method:'POST'});if(r.ok){const x=await r.json();toast(`Home Assistant connected — ${x.published_entities} entities updated`);return}let message='Home Assistant test failed';try{const e=await r.json();message=e.detail||message}catch(e){}toast(message)
 }
 ['cTheme','cOpacity','cBlur','cIntensity','cCompact'].forEach(id=>document.addEventListener('input',e=>{if(e.target&&e.target.id===id)previewCustomization()}));
 

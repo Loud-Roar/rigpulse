@@ -5,6 +5,13 @@
 RigPulse is a local-first dashboard for mixed ASIC mining fleets. It polls miners
 directly over the LAN and keeps monitoring data local.
 
+## v0.7.0
+
+Home Assistant can now receive automatic miner, fleet, wallet, and SoloPool
+entities plus events for new best shares, warnings, and blocks found.
+
+See `RELEASE-NOTES-v0.7.0.md` for details.
+
 ## v0.6.4
 
 SoloPool worker shares now provide a password-free fallback for Canaan Nano
@@ -165,7 +172,7 @@ The Umbrel Community App Store is published separately from this source reposito
 The production Umbrel package expects a public GHCR image:
 
 ```text
-ghcr.io/loud-roar/rigpulse:0.6.4
+ghcr.io/loud-roar/rigpulse:0.7.0
 ```
 
 Source repository: `https://github.com/Loud-Roar/rigpulse`
