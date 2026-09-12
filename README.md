@@ -5,6 +5,13 @@
 RigPulse is a local-first dashboard for mixed ASIC mining fleets. It polls miners
 directly over the LAN and keeps monitoring data local.
 
+## v0.7.1
+
+The compact Bitcoin Cash card now displays live BCH network difficulty and the
+age of its latest successful update.
+
+See `RELEASE-NOTES-v0.7.1.md` for details.
+
 ## v0.7.0
 
 Home Assistant can now receive automatic miner, fleet, wallet, and SoloPool
@@ -172,7 +179,7 @@ The Umbrel Community App Store is published separately from this source reposito
 The production Umbrel package expects a public GHCR image:
 
 ```text
-ghcr.io/loud-roar/rigpulse:0.7.0
+ghcr.io/loud-roar/rigpulse:0.7.1
 ```
 
 Source repository: `https://github.com/Loud-Roar/rigpulse`
